@@ -3,6 +3,11 @@ import * as exec from '@actions/exec';
 import { promises as fs } from 'fs';
 import path from 'path';
 
+/**
+ * Main entry point for the action
+ * Reads inputs, validates them, and calls the appropriate function based on the event type
+ * @returns {Promise<void>}
+ */
 async function run() {
   try {
     const cloudflareApiToken = core.getInput('CLOUDFLARE_API_TOKEN', { required: true });
@@ -36,6 +41,14 @@ async function run() {
   }
 }
 
+/**
+ * Deploys a folder to Cloudflare Pages
+ * @param {string} distFolder - Path to the distribution folder to deploy
+ * @param {string} projectName - Cloudflare Pages project name
+ * @param {string} branch - Branch name to deploy to
+ * @param {string} headersJson - JSON string containing custom headers configuration
+ * @returns {Promise<void>}
+ */
 async function deployToCloudflare(distFolder, projectName, branch, headersJson) {
   core.info(`Deploying ${distFolder} to Cloudflare Pages project "${projectName}" on branch "${branch}"`);
   
@@ -96,6 +109,11 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   }
 }
 
+/**
+ * Deletes a Cloudflare Pages project
+ * @param {string} projectName - Name of the Cloudflare Pages project to delete
+ * @returns {Promise<void>}
+ */
 async function deleteFromCloudflare(projectName) {
   core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
   
