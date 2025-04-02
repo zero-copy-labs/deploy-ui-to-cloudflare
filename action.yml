@@ -1,24 +1,18 @@
-name: The name of your action here
-description: Provide a description here
-author: Your name or organization here
-
-# Add your action's branding here. This will appear on the GitHub Marketplace.
-branding:
-  icon: heart
-  color: red
-
-# Define your inputs here.
+name: 'Reset Supabase Database'
+description: 'Clean an Supabase database and reset it to a blank state'
 inputs:
-  milliseconds:
-    description: Your input description here
+  connectionString:  # id of input
+    description: 'e.g. postgres://user:password@host:5432/database'
     required: true
-    default: '1000'
-
-# Define your outputs here.
-outputs:
-  time:
-    description: Your output description here
-
+  users:  # id of input
+    description: 'List if user emails to delete e.g. test@test.com,test2@test.com'
+    required: false 
+  buckets:  # id of input
+    description: 'List of buckets to delete e.g. public,content'
+    required: false 
+  extensions:  # id of input
+    description: 'List of extensions to disable e.g. content-lib,welcome'
+    required: false 
 runs:
-  using: node20
-  main: dist/index.js
+  using: 'node16'
+  main: 'dist/index.js'
