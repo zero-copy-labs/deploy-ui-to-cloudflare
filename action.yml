@@ -1,5 +1,8 @@
 name: 'Deploy UI to Cloudflare Pages'
 description: 'Deploy or delete a Cloudflare Pages deployment'
+branding:
+  icon: 'cloud'
+  color: 'orange'
 inputs:
   CLOUDFLARE_API_TOKEN:
     description: 'Cloudflare API token with Pages permissions'
@@ -22,7 +25,7 @@ inputs:
     required: false
     default: 'deploy'
   HEADERS:
-    description: 'JSON string of custom headers configuration'
+    description: 'JSON string of custom headers configuration (e.g. {"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}})'
     required: false
     default: '{}'
 outputs:

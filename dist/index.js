@@ -18998,7 +18998,7 @@ var require_toolrunner = __commonJS({
     var events = __importStar(require("events"));
     var child = __importStar(require("child_process"));
     var path2 = __importStar(require("path"));
-    var io2 = __importStar(require_io());
+    var io = __importStar(require_io());
     var ioUtil = __importStar(require_io_util());
     var timers_1 = require("timers");
     var IS_WINDOWS = process.platform === "win32";
@@ -19214,7 +19214,7 @@ var require_toolrunner = __commonJS({
           if (!ioUtil.isRooted(this.toolPath) && (this.toolPath.includes("/") || IS_WINDOWS && this.toolPath.includes("\\"))) {
             this.toolPath = path2.resolve(process.cwd(), this.options.cwd || process.cwd(), this.toolPath);
           }
-          this.toolPath = yield io2.which(this.toolPath, true);
+          this.toolPath = yield io.which(this.toolPath, true);
           return new Promise((resolve, reject) => __awaiter(this, void 0, void 0, function* () {
             this._debug(`exec tool: ${this.toolPath}`);
             this._debug("arguments:");
@@ -19744,10 +19744,10 @@ var require_core = __commonJS({
       (0, command_1.issueCommand)("set-env", { name }, convertedVal);
     }
     exports.exportVariable = exportVariable;
-    function setSecret(secret) {
+    function setSecret2(secret) {
       (0, command_1.issueCommand)("add-mask", {}, secret);
     }
-    exports.setSecret = setSecret;
+    exports.setSecret = setSecret2;
     function addPath(inputPath) {
       const filePath = process.env["GITHUB_PATH"] || "";
       if (filePath) {
@@ -19895,7 +19895,6 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
 // index.mjs
 var core = __toESM(require_core(), 1);
 var exec = __toESM(require_exec(), 1);
-var io = __toESM(require_io(), 1);
 var import_fs = require("fs");
 var import_path = __toESM(require("path"), 1);
 async function run() {
@@ -19907,53 +19906,97 @@ async function run() {
     const branch = core.getInput("BRANCH") || "main";
     const event = core.getInput("EVENT") || "deploy";
     const headers = core.getInput("HEADERS") || "{}";
+    if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
+      throw new Error("Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty");
+    }
     if (event !== "deploy" && event !== "delete") {
       throw new Error('EVENT must be either "deploy" or "delete"');
     }
+    core.setSecret(cloudflareApiToken);
     process.env.CLOUDFLARE_API_TOKEN = cloudflareApiToken;
     process.env.CLOUDFLARE_ACCOUNT_ID = cloudflareAccountId;
     if (event === "deploy") {
-      core.info(`Deploying ${distFolder} to Cloudflare Pages project "${projectName}" on branch "${branch}"`);
-      try {
-        await import_fs.promises.access(distFolder);
-      } catch (error) {
-        throw new Error(`Distribution folder "${distFolder}" does not exist`);
-      }
-      try {
-        const headersObj = JSON.parse(headers);
-        if (Object.keys(headersObj).length > 0) {
-          core.info("Processing custom headers configuration");
-          const headersFilePath = import_path.default.join(distFolder, "_headers.json");
-          await import_fs.promises.writeFile(headersFilePath, headers);
-          core.info(`Custom headers written to ${headersFilePath}`);
-        }
-      } catch (error) {
-        core.warning(`Error processing headers: ${error.message}`);
-      }
-      let deployOutput = "";
-      const options = {
-        listeners: {
-          stdout: (data) => {
-            deployOutput += data.toString();
-          }
-        }
-      };
-      await exec.exec("npx", ["wrangler@2", "pages", "publish", distFolder, "--project-name", projectName, "--branch", branch], options);
-      const urlMatch = deployOutput.match(/https?:\/\/[^\s]+/);
-      if (urlMatch) {
-        const deployUrl = urlMatch[0];
-        core.info(`Deployment successful: ${deployUrl}`);
-        core.setOutput("url", deployUrl);
-      } else {
-        core.warning("Could not extract deployment URL from output");
-      }
-    } else if (event === "delete") {
-      core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
-      await exec.exec("npx", ["wrangler@2", "pages", "project", "delete", projectName, "--yes"]);
-      core.info(`Successfully deleted project "${projectName}"`);
+      await deployToCloudflare(distFolder, projectName, branch, headers);
+    } else {
+      await deleteFromCloudflare(projectName);
     }
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
+  }
+}
+async function deployToCloudflare(distFolder, projectName, branch, headersJson) {
+  core.info(`Deploying ${distFolder} to Cloudflare Pages project "${projectName}" on branch "${branch}"`);
+  try {
+    await import_fs.promises.access(distFolder);
+  } catch (error) {
+    throw new Error(`Distribution folder "${distFolder}" does not exist or is not accessible`);
+  }
+  try {
+    const headersObj = JSON.parse(headersJson);
+    if (Object.keys(headersObj).length > 0) {
+      core.info("Processing custom headers configuration");
+      const headersFilePath = import_path.default.join(distFolder, "_headers.json");
+      await import_fs.promises.writeFile(headersFilePath, headersJson);
+      core.info(`Custom headers written to ${headersFilePath}`);
+    }
+  } catch (error) {
+    core.warning(`Error processing headers: ${error.message}. Continuing without custom headers.`);
+  }
+  let deployOutput = "";
+  let errorOutput = "";
+  const options = {
+    listeners: {
+      stdout: (data) => {
+        const chunk = data.toString();
+        deployOutput += chunk;
+        if (chunk.trim())
+          core.info(chunk.trim());
+      },
+      stderr: (data) => {
+        const chunk = data.toString();
+        errorOutput += chunk;
+        if (chunk.trim())
+          core.warning(chunk.trim());
+      }
+    }
+  };
+  try {
+    await exec.exec("npx", ["wrangler@3", "pages", "deploy", distFolder, "--project-name", projectName, "--branch", branch], options);
+  } catch (error) {
+    throw new Error(`Wrangler deployment failed: ${errorOutput || error.message}`);
+  }
+  const urlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
+  const match = deployOutput.match(urlRegex);
+  if (match && match[1]) {
+    const deployUrl = match[1].trim();
+    core.info(`Deployment successful: ${deployUrl}`);
+    core.setOutput("url", deployUrl);
+  } else {
+    core.warning("Could not extract deployment URL from output. Deployment might have succeeded, but no URL was found.");
+    const guessedUrl = `https://${branch === "main" ? "" : branch + "."}${projectName}.pages.dev`;
+    core.info(`Guessed deployment URL (may not be accurate): ${guessedUrl}`);
+    core.setOutput("url", guessedUrl);
+  }
+}
+async function deleteFromCloudflare(projectName) {
+  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
+  let errorOutput = "";
+  const options = {
+    listeners: {
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+  try {
+    await exec.exec("npx", ["wrangler@3", "pages", "project", "delete", projectName, "--yes"], options);
+    core.info(`Successfully deleted project "${projectName}"`);
+  } catch (error) {
+    if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
+      core.warning(`Project "${projectName}" does not exist or is already deleted.`);
+    } else {
+      throw new Error(`Failed to delete project: ${errorOutput || error.message}`);
+    }
   }
 }
 run();
