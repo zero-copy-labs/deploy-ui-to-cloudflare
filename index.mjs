@@ -1,56 +1,89 @@
 import * as core from '@actions/core';
-import * as github from '@actions/github';
-import * as pg from 'pg';
-const { Client } = pg.default;
+import * as exec from '@actions/exec';
+import * as io from '@actions/io';
+import { promises as fs } from 'fs';
+import path from 'path';
 
-import runEnum from './src/enums.mjs';
-import runTablesAndViews from './src/tables-and-views.mjs';
-import runFunctions from './src/functions.mjs';
-import runMigrations from './src/migrations.mjs';
-import runBuckets from './src/buckets.mjs';
-import runPolicies from './src/policies.mjs';
-import runUsers from './src/users.mjs';
-import runExtensions from './src/extensions.mjs';
-
+/**
+ * Main function to run the action
+ */
 async function run() {
-	const users = core.getInput('users').split(',');
-	const buckets = core.getInput('buckets').split(',');
-	const extensions = core.getInput('extensions').split(',');
+  try {
+    // Get inputs
+    const cloudflareApiToken = core.getInput('CLOUDFLARE_API_TOKEN', { required: true });
+    const cloudflareAccountId = core.getInput('CLOUDFLARE_ACCOUNT_ID', { required: true });
+    const distFolder = core.getInput('DIST_FOLDER', { required: true });
+    const projectName = core.getInput('PROJECT_NAME', { required: true });
+    const branch = core.getInput('BRANCH') || 'main';
+    const event = core.getInput('EVENT') || 'deploy';
+    const headers = core.getInput('HEADERS') || '{}';
 
-	const c = new Client({
-		connectionString: core.getInput('connectionString'),
-	});
-	await c.connect();
+    // Validate input
+    if (event !== 'deploy' && event !== 'delete') {
+      throw new Error('EVENT must be either "deploy" or "delete"');
+    }
 
-	// Disable needed extensions
-	await runExtensions(extensions, c);
+    // Set environment variables for Cloudflare
+    process.env.CLOUDFLARE_API_TOKEN = cloudflareApiToken;
+    process.env.CLOUDFLARE_ACCOUNT_ID = cloudflareAccountId;
 
-	// Find all tables and views in the public schema
-	await runTablesAndViews(c);
+    // Log what we're about to do
+    if (event === 'deploy') {
+      core.info(`Deploying ${distFolder} to Cloudflare Pages project "${projectName}" on branch "${branch}"`);
+      
+      // Check if dist folder exists
+      try {
+        await fs.access(distFolder);
+      } catch (error) {
+        throw new Error(`Distribution folder "${distFolder}" does not exist`);
+      }
 
-	// Find all Enums in the public schema
-	await runEnum(c);
+      // Process custom headers if provided
+      try {
+        const headersObj = JSON.parse(headers);
+        if (Object.keys(headersObj).length > 0) {
+          core.info('Processing custom headers configuration');
+          const headersFilePath = path.join(distFolder, '_headers.json');
+          await fs.writeFile(headersFilePath, headers);
+          core.info(`Custom headers written to ${headersFilePath}`);
+        }
+      } catch (error) {
+        core.warning(`Error processing headers: ${error.message}`);
+      }
 
-	// Find all Functions in the public schema
-	await runFunctions(c);
+      // Deploy to Cloudflare Pages
+      let deployOutput = '';
+      const options = {
+        listeners: {
+          stdout: (data) => {
+            deployOutput += data.toString();
+          }
+        }
+      };
 
-	// Clear the migrations table
-	await runMigrations(c);
+      await exec.exec('npx', ['wrangler@2', 'pages', 'publish', distFolder, '--project-name', projectName, '--branch', branch], options);
 
-	// Clear out the buckets
-	await runBuckets(buckets, c);
+      // Extract URL from output
+      const urlMatch = deployOutput.match(/https?:\/\/[^\s]+/);
+      if (urlMatch) {
+        const deployUrl = urlMatch[0];
+        core.info(`Deployment successful: ${deployUrl}`);
+        core.setOutput('url', deployUrl);
+      } else {
+        core.warning('Could not extract deployment URL from output');
+      }
+    } else if (event === 'delete') {
+      core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
+      
+      // Delete from Cloudflare Pages
+      await exec.exec('npx', ['wrangler@2', 'pages', 'project', 'delete', projectName, '--yes']);
+      
+      core.info(`Successfully deleted project "${projectName}"`);
+    }
 
-	// Delete policies
-	await runPolicies(c);
-
-	// Delete all the included users
-	await runUsers(users, c);
-
-	await c.end()
+  } catch (error) {
+    core.setFailed(`Action failed: ${error.message}`);
+  }
 }
 
-try {
-	run();
-} catch (error) {
-	core.setFailed(error.message);
-}
+run();

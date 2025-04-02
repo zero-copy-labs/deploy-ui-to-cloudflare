@@ -1,18 +1,33 @@
-name: 'Reset Supabase Database'
-description: 'Clean an Supabase database and reset it to a blank state'
+name: 'Deploy UI to Cloudflare Pages'
+description: 'Deploy or delete a Cloudflare Pages deployment'
 inputs:
-  connectionString:  # id of input
-    description: 'e.g. postgres://user:password@host:5432/database'
+  CLOUDFLARE_API_TOKEN:
+    description: 'Cloudflare API token with Pages permissions'
     required: true
-  users:  # id of input
-    description: 'List if user emails to delete e.g. test@test.com,test2@test.com'
-    required: false 
-  buckets:  # id of input
-    description: 'List of buckets to delete e.g. public,content'
-    required: false 
-  extensions:  # id of input
-    description: 'List of extensions to disable e.g. content-lib,welcome'
-    required: false 
+  CLOUDFLARE_ACCOUNT_ID:
+    description: 'Cloudflare account ID'
+    required: true
+  DIST_FOLDER:
+    description: 'Path to the distribution folder that will be deployed'
+    required: true
+  PROJECT_NAME:
+    description: 'Cloudflare Pages project name'
+    required: true
+  BRANCH:
+    description: 'Git branch to deploy to (defaults to "main")'
+    required: false
+    default: 'main'
+  EVENT:
+    description: 'Action to perform: deploy or delete'
+    required: false
+    default: 'deploy'
+  HEADERS:
+    description: 'JSON string of custom headers configuration'
+    required: false
+    default: '{}'
+outputs:
+  url:
+    description: 'URL of the deployed site (only available when EVENT is "deploy")'
 runs:
   using: 'node16'
   main: 'dist/index.js'

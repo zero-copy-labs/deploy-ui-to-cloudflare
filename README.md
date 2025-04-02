@@ -1,30 +1,68 @@
-# Action to reset a Supabase Database 
+# GitHub Action: Deploy UI to Cloudflare Pages
+
+This action deploys your static site to Cloudflare Pages or deletes an existing deployment.
 
 ## Inputs
 
-### `connectionString`
+### `CLOUDFLARE_API_TOKEN`
 
-**Required** e.g. `postgres://user:password@host:5432/database`.
+**Required** Cloudflare API token with Pages permissions.
 
-### `users`
+### `CLOUDFLARE_ACCOUNT_ID`
 
-e.g. `user@test.com,user2@test.com`.
+**Required** Cloudflare account ID.
 
-### `buckets`
+### `DIST_FOLDER`
 
-e.g. `public,content`.
+**Required** Path to the distribution folder that will be deployed.
 
-### `extensions`
+### `PROJECT_NAME`
 
-e.g. `content-lib,welcome`.
+**Required** Cloudflare Pages project name.
+
+### `BRANCH`
+
+Branch to deploy to. Defaults to "main".
+
+### `EVENT`
+
+Action to perform, either "deploy" or "delete". Defaults to "deploy".
+
+### `HEADERS`
+
+JSON string of custom headers configuration. Defaults to empty object.
+
+## Outputs
+
+### `url`
+
+The URL of the deployed site (only available when EVENT is "deploy").
 
 ## Example usage
 
+### Deploy to Cloudflare Pages
+
 ```yaml
-uses: zero-copy-labs/reset-supabase-database@main
-with:
-  connectionString: 'postgres://user:password@host:5432/database'
-  users: 'user@test.com,user2@test.com'
-  buckets: 'public,content'
-  extensions: 'content-lib,welcome'
+- name: Deploy to Cloudflare Pages
+  uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
+  with:
+    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    DIST_FOLDER: 'dist'
+    PROJECT_NAME: 'my-project'
+    BRANCH: 'main'
+    EVENT: 'deploy'
+    HEADERS: '{"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}}'
+```
+
+### Delete a deployment
+
+```yaml
+- name: Delete Cloudflare Pages deployment
+  uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
+  with:
+    CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    PROJECT_NAME: 'my-project'
+    EVENT: 'delete'
 ```
