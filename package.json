@@ -9,7 +9,7 @@
     "pg-native": "^3.0.1"
   },
   "devDependencies": {
-    "esbuild": "^0.12.20",
+    "esbuild": "^0.25.2",
     "eslint": "^7.32.0"
   }
 }
