@@ -89,7 +89,7 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   };
 
   try {
-    await exec.exec('npx', ['wrangler@3', 'pages', 'deploy', distFolder, '--project-name', projectName, '--branch', branch], options);
+    await exec.exec('npx', ['wrangler@4', 'pages', 'deploy', distFolder, '--project-name', projectName, '--branch', branch], options);
   } catch (error) {
     throw new Error(`Wrangler deployment failed: ${errorOutput || error.message}`);
   }
@@ -127,7 +127,7 @@ async function deleteFromCloudflare(projectName) {
   };
 
   try {
-    await exec.exec('npx', ['wrangler@3', 'pages', 'project', 'delete', projectName, '--yes'], options);
+    await exec.exec('npx', ['wrangler@4', 'pages', 'project', 'delete', projectName, '--yes'], options);
     core.info(`Successfully deleted project "${projectName}"`);
   } catch (error) {
     if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
