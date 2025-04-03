@@ -19965,10 +19965,16 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   } catch (error) {
     throw new Error(`Wrangler deployment failed: ${errorOutput || error.message}`);
   }
-  const urlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
-  const match = deployOutput.match(urlRegex);
-  if (match && match[1]) {
-    const deployUrl = match[1].trim();
+  const aliasUrlRegex = /✨\s*Deployment alias URL:\s*(\bhttps?:\/\/[^\s]+\b)/i;
+  const aliasMatch = deployOutput.match(aliasUrlRegex);
+  const standardUrlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL|✨\s*Deployment complete! Take a peek over at)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
+  const standardMatch = deployOutput.match(standardUrlRegex);
+  if (aliasMatch && aliasMatch[1]) {
+    const deployUrl = aliasMatch[1].trim();
+    core.info(`Deployment successful (alias URL): ${deployUrl}`);
+    core.setOutput("url", deployUrl);
+  } else if (standardMatch && standardMatch[1]) {
+    const deployUrl = standardMatch[1].trim();
     core.info(`Deployment successful: ${deployUrl}`);
     core.setOutput("url", deployUrl);
   } else {
