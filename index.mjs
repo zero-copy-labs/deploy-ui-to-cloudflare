@@ -300,9 +300,13 @@ async function managePrDeployments(projectName, prefix, keepCount) {
  * @returns {Promise<boolean>} - True if the project exists
  */
 async function checkProjectExists(projectName) {
+  let output = '';
   let errorOutput = '';
   const options = {
     listeners: {
+      stdout: (data) => {
+        output += data.toString();
+      },
       stderr: (data) => {
         errorOutput += data.toString();
       }
@@ -310,16 +314,24 @@ async function checkProjectExists(projectName) {
   };
 
   try {
-    await exec.exec('npx', ['wrangler@4', 'pages', 'project', 'info', projectName], options);
-    core.info(`Project "${projectName}" exists`);
-    return true;
-  } catch (error) {
-    if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
+    // Use the list command instead of non-existent info command
+    await exec.exec('npx', ['wrangler@4', 'pages', 'project', 'list'], options);
+    
+    // Check if the project name is in the output
+    const projects = output.split('\n').filter(line => line.trim());
+    const projectExists = projects.some(project => project.trim() === projectName);
+    
+    if (projectExists) {
+      core.info(`Project "${projectName}" exists`);
+      return true;
+    } else {
       core.info(`Project "${projectName}" does not exist`);
       return false;
     }
-    
-    throw new Error(`Failed to check if project exists: ${errorOutput || error.message}`);
+  } catch (error) {
+    // If we can't determine, assume it doesn't exist
+    core.warning(`Error checking if project exists: ${errorOutput || error.message}`);
+    return false;
   }
 }
 
