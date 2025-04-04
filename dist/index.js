@@ -25656,24 +25656,32 @@ async function managePrDeployments(projectName, prefix, keepCount) {
   core.info(`Successfully deleted ${successCount}/${deploymentsToDelete.length} deployments`);
 }
 async function checkProjectExists(projectName) {
+  let output = "";
   let errorOutput = "";
   const options = {
     listeners: {
+      stdout: (data) => {
+        output += data.toString();
+      },
       stderr: (data) => {
         errorOutput += data.toString();
       }
     }
   };
   try {
-    await exec.exec("npx", ["wrangler@4", "pages", "project", "info", projectName], options);
-    core.info(`Project "${projectName}" exists`);
-    return true;
-  } catch (error) {
-    if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
+    await exec.exec("npx", ["wrangler@4", "pages", "project", "list"], options);
+    const projects = output.split("\n").filter((line) => line.trim());
+    const projectExists = projects.some((project) => project.trim() === projectName);
+    if (projectExists) {
+      core.info(`Project "${projectName}" exists`);
+      return true;
+    } else {
       core.info(`Project "${projectName}" does not exist`);
       return false;
     }
-    throw new Error(`Failed to check if project exists: ${errorOutput || error.message}`);
+  } catch (error) {
+    core.warning(`Error checking if project exists: ${errorOutput || error.message}`);
+    return false;
   }
 }
 async function createProject(projectName) {
