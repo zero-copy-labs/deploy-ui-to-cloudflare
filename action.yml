@@ -39,6 +39,18 @@ inputs:
     description: 'Automatically create the Cloudflare Pages project if it does not exist'
     required: false
     default: 'true'
+  CLEANUP_OLD_DEPLOYMENTS:
+    description: 'Clean up old deployments to avoid hitting the deployment limit'
+    required: false
+    default: 'false'
+  DEPLOYMENT_PREFIX:
+    description: 'Prefix to match when cleaning up or deleting deployments (e.g. the branch name)'
+    required: false
+    default: ''
+  KEEP_DEPLOYMENTS:
+    description: 'Number of deployments to keep when cleaning up (oldest will be deleted)'
+    required: false
+    default: '5'
 outputs:
   url:
     description: 'URL of the deployed site (only available when EVENT is "deploy")'

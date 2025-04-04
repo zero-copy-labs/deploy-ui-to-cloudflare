@@ -3,7 +3,6 @@ import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import { promises as fs } from 'fs';
 import path from 'path';
-import https from 'https';
 
 /**
  * Main entry point for the action
@@ -22,6 +21,9 @@ async function run() {
     const githubToken = core.getInput('GITHUB_TOKEN');
     const environmentName = core.getInput('ENVIRONMENT_NAME') || 'preview';
     const createProjectIfMissing = core.getBooleanInput('CREATE_PROJECT_IF_MISSING') || true;
+    const cleanupOldDeployments = core.getBooleanInput('CLEANUP_OLD_DEPLOYMENTS') || false;
+    const deploymentPrefix = core.getInput('DEPLOYMENT_PREFIX') || '';
+    const keepDeployments = parseInt(core.getInput('KEEP_DEPLOYMENTS') || '5', 10);
 
     if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
       throw new Error('Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty');
@@ -41,17 +43,18 @@ async function run() {
 
     if (event === 'deploy') {
       // Check if project exists and create it if needed
-      const projectExists = await checkProjectExists(projectName, cloudflareApiToken, cloudflareAccountId);
+      const projectExists = await checkProjectExists(projectName);
       
       if (!projectExists) {
         if (createProjectIfMissing) {
           core.info(`Project "${projectName}" does not exist. Creating it...`);
-          await createProject(projectName, cloudflareApiToken, cloudflareAccountId);
+          await createProject(projectName);
         } else {
           throw new Error(`Project "${projectName}" does not exist and CREATE_PROJECT_IF_MISSING is set to false`);
         }
       }
       
+      // Deploy to Cloudflare
       const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
       
       // If we have a GitHub token, create a deployment and post a comment
@@ -61,14 +64,19 @@ async function run() {
       } else {
         core.info('No GitHub token provided, skipping deployment status creation and PR comment');
       }
-    } else {
-      // For delete operations, check if the project exists first to avoid unnecessary errors
-      const projectExists = await checkProjectExists(projectName, cloudflareApiToken, cloudflareAccountId);
       
-      if (projectExists) {
-        await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
+      // Clean up old deployments if requested
+      if (cleanupOldDeployments) {
+        core.info(`Cleaning up old deployments for project "${projectName}"`);
+        await managePrDeployments(projectName, deploymentPrefix, keepDeployments);
+      }
+    } else {
+      // For PR deletion, we want to delete all deployments with the PR prefix
+      if (deploymentPrefix) {
+        core.info(`Deleting all deployments with prefix "${deploymentPrefix}" for project "${projectName}"`);
+        await deleteMatchingDeployments(projectName, deploymentPrefix);
       } else {
-        core.info(`Project "${projectName}" does not exist. Nothing to delete.`);
+        core.info(`No deployment prefix provided, skipping selective deletion`);
       }
       
       // If we have a GitHub token, deactivate deployments and post a cleanup comment
@@ -86,105 +94,255 @@ async function run() {
 }
 
 /**
- * Make a request to the Cloudflare API
- * @param {string} method - HTTP method
- * @param {string} path - API path
- * @param {string} token - API token
- * @param {object} [body] - Request body for POST/PUT requests
- * @returns {Promise<object>} - Response body
+ * List all deployments for a project
+ * @param {string} projectName - Project name
+ * @returns {Promise<Array>} - List of deployments
  */
-async function cloudflareApiRequest(method, path, token, body = null) {
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: 'api.cloudflare.com',
-      port: 443,
-      path,
-      method,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
+async function listProjectDeployments(projectName) {
+  core.info(`Listing deployments for project "${projectName}"`);
+  
+  let deploymentOutput = '';
+  let errorOutput = '';
+  
+  const options = {
+    listeners: {
+      stdout: (data) => {
+        const chunk = data.toString();
+        deploymentOutput += chunk;
+      },
+      stderr: (data) => {
+        const chunk = data.toString();
+        errorOutput += chunk;
       }
-    };
+    }
+  };
 
-    const req = https.request(options, (res) => {
-      let data = '';
-      
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      res.on('end', () => {
-        try {
-          const parsedData = JSON.parse(data);
-          
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(parsedData);
-          } else {
-            reject(new Error(`Cloudflare API returned ${res.statusCode}: ${JSON.stringify(parsedData)}`));
-          }
-        } catch (e) {
-          reject(new Error(`Failed to parse Cloudflare API response: ${e.message}`));
+  try {
+    await exec.exec('npx', ['wrangler@4', 'pages', 'deployment', 'list', '--project-name', projectName], options);
+    
+    // Parse deployment information from the output
+    const deployments = [];
+    const lines = deploymentOutput.split('\n');
+    
+    let currentDeployment = null;
+    
+    for (const line of lines) {
+      const idMatch = line.match(/Deployment ID: ([a-f0-9-]+)/);
+      if (idMatch) {
+        if (currentDeployment) {
+          deployments.push(currentDeployment);
         }
-      });
-    });
-    
-    req.on('error', (error) => {
-      reject(new Error(`Request to Cloudflare API failed: ${error.message}`));
-    });
-    
-    if (body) {
-      req.write(JSON.stringify(body));
+        currentDeployment = { id: idMatch[1] };
+        continue;
+      }
+      
+      if (!currentDeployment) continue;
+      
+      const createdMatch = line.match(/Created on: (.+)/);
+      if (createdMatch && currentDeployment) {
+        currentDeployment.created = createdMatch[1];
+        continue;
+      }
+      
+      const aliasMatch = line.match(/Aliases: (.+)/);
+      if (aliasMatch && currentDeployment) {
+        currentDeployment.aliases = aliasMatch[1].split(',').map(a => a.trim());
+        continue;
+      }
+      
+      const activeMatch = line.match(/Active/i);
+      if (activeMatch && currentDeployment) {
+        currentDeployment.active = true;
+      }
     }
     
-    req.end();
-  });
+    // Add the last deployment if it exists
+    if (currentDeployment) {
+      deployments.push(currentDeployment);
+    }
+    
+    core.info(`Found ${deployments.length} deployments for project "${projectName}"`);
+    return deployments;
+  } catch (error) {
+    if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
+      core.warning(`Project "${projectName}" does not exist or has no deployments.`);
+      return [];
+    }
+    throw new Error(`Failed to list deployments: ${errorOutput || error.message}`);
+  }
 }
 
 /**
- * Check if a Cloudflare Pages project exists
+ * Delete a specific deployment
  * @param {string} projectName - Project name
- * @param {string} token - Cloudflare API token
- * @param {string} accountId - Cloudflare account ID
- * @returns {Promise<boolean>} - True if project exists, false otherwise
+ * @param {string} deploymentId - Deployment ID
+ * @returns {Promise<boolean>} - Success status
  */
-async function checkProjectExists(projectName, token, accountId) {
+async function deleteDeployment(projectName, deploymentId) {
+  core.info(`Deleting deployment ${deploymentId} from project "${projectName}"`);
+  
+  let errorOutput = '';
+  const options = {
+    listeners: {
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+
   try {
-    const path = `/client/v4/accounts/${accountId}/pages/projects/${projectName}`;
-    await cloudflareApiRequest('GET', path, token);
+    await exec.exec('npx', ['wrangler@4', 'pages', 'deployment', 'delete', deploymentId, '--project-name', projectName, '--yes'], options);
+    core.info(`Successfully deleted deployment ${deploymentId}`);
+    return true;
+  } catch (error) {
+    core.warning(`Failed to delete deployment ${deploymentId}: ${errorOutput || error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Delete all deployments that match a specific prefix
+ * @param {string} projectName - Project name
+ * @param {string} prefix - Prefix to match in deployment aliases
+ * @returns {Promise<void>}
+ */
+async function deleteMatchingDeployments(projectName, prefix) {
+  const deployments = await listProjectDeployments(projectName);
+  
+  if (deployments.length === 0) {
+    core.info(`No deployments found for project "${projectName}"`);
+    return;
+  }
+  
+  // Find deployments with matching aliases
+  const matchingDeployments = deployments.filter(deployment => {
+    if (!deployment.aliases) return false;
+    return deployment.aliases.some(alias => alias.includes(prefix));
+  });
+  
+  if (matchingDeployments.length === 0) {
+    core.info(`No deployments with prefix "${prefix}" found`);
+    return;
+  }
+  
+  core.info(`Found ${matchingDeployments.length} deployments with prefix "${prefix}"`);
+  
+  // Delete matching deployments
+  let successCount = 0;
+  for (const deployment of matchingDeployments) {
+    const success = await deleteDeployment(projectName, deployment.id);
+    if (success) successCount++;
+    
+    // Add a small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  core.info(`Successfully deleted ${successCount}/${matchingDeployments.length} deployments`);
+}
+
+/**
+ * Manage PR deployments - keep recent ones and delete older ones
+ * @param {string} projectName - Project name
+ * @param {string} prefix - PR prefix to identify deployments
+ * @param {number} keepCount - Number of deployments to keep
+ * @returns {Promise<void>}
+ */
+async function managePrDeployments(projectName, prefix, keepCount) {
+  const deployments = await listProjectDeployments(projectName);
+  
+  if (deployments.length === 0) {
+    core.info(`No deployments found for project "${projectName}"`);
+    return;
+  }
+  
+  // Find deployments with matching aliases and sort by creation date (newest first)
+  const matchingDeployments = deployments
+    .filter(deployment => {
+      if (!deployment.aliases) return false;
+      return prefix ? deployment.aliases.some(alias => alias.includes(prefix)) : true;
+    })
+    .sort((a, b) => {
+      const dateA = new Date(a.created);
+      const dateB = new Date(b.created);
+      return dateB - dateA; // Newest first
+    });
+  
+  if (matchingDeployments.length === 0) {
+    core.info(`No deployments${prefix ? ` with prefix "${prefix}"` : ''} found`);
+    return;
+  }
+  
+  if (matchingDeployments.length <= keepCount) {
+    core.info(`Only ${matchingDeployments.length} deployments found, which is less than the threshold (${keepCount}). No cleanup needed.`);
+    return;
+  }
+  
+  // Keep the newest ones, delete the rest
+  const deploymentsToDelete = matchingDeployments.slice(keepCount);
+  
+  core.info(`Keeping ${keepCount} newest deployments, deleting ${deploymentsToDelete.length} older ones`);
+  
+  let successCount = 0;
+  for (const deployment of deploymentsToDelete) {
+    const success = await deleteDeployment(projectName, deployment.id);
+    if (success) successCount++;
+    
+    // Add a small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  core.info(`Successfully deleted ${successCount}/${deploymentsToDelete.length} deployments`);
+}
+
+/**
+ * Check if a project exists
+ * @param {string} projectName - Project name
+ * @returns {Promise<boolean>} - True if the project exists
+ */
+async function checkProjectExists(projectName) {
+  let errorOutput = '';
+  const options = {
+    listeners: {
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+
+  try {
+    await exec.exec('npx', ['wrangler@4', 'pages', 'project', 'info', projectName], options);
     core.info(`Project "${projectName}" exists`);
     return true;
   } catch (error) {
-    // 404 means project doesn't exist, which is not an error for our purposes
-    if (error.message.includes('404')) {
+    if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
       core.info(`Project "${projectName}" does not exist`);
       return false;
     }
     
-    // For other errors, log and rethrow
-    core.warning(`Error checking if project exists: ${error.message}`);
-    throw error;
+    throw new Error(`Failed to check if project exists: ${errorOutput || error.message}`);
   }
 }
 
 /**
  * Create a new Cloudflare Pages project
  * @param {string} projectName - Project name
- * @param {string} token - Cloudflare API token
- * @param {string} accountId - Cloudflare account ID
  * @returns {Promise<void>}
  */
-async function createProject(projectName, token, accountId) {
+async function createProject(projectName) {
+  let errorOutput = '';
+  const options = {
+    listeners: {
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+
   try {
-    const path = `/client/v4/accounts/${accountId}/pages/projects`;
-    const body = {
-      name: projectName,
-      production_branch: 'main'
-    };
-    
-    await cloudflareApiRequest('POST', path, token, body);
+    await exec.exec('npx', ['wrangler@4', 'pages', 'project', 'create', projectName, '--production-branch', 'main'], options);
     core.info(`Successfully created project "${projectName}"`);
   } catch (error) {
-    throw new Error(`Failed to create project: ${error.message}`);
+    throw new Error(`Failed to create project: ${errorOutput || error.message}`);
   }
 }
 
@@ -431,22 +589,29 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
     throw new Error(`Wrangler deployment failed: ${errorOutput || error.message}`);
   }
 
-  // First, try to extract the deployment alias URL (✨ Deployment alias URL: ...)
-  const aliasUrlRegex = /✨\s*Deployment alias URL:\s*(\bhttps?:\/\/[^\s]+\b)/i;
+  // First, try to extract the primary URL (with hash) 
+  const primaryUrlRegex = /Deployment complete! Take a peek over at\s+(\bhttps?:\/\/[^\s]+\b)/i;
+  const primaryMatch = deployOutput.match(primaryUrlRegex);
+  
+  // Then try the alias URL
+  const aliasUrlRegex = /Deployment alias URL:\s+(\bhttps?:\/\/[^\s]+\b)/i;
   const aliasMatch = deployOutput.match(aliasUrlRegex);
   
-  // If we can't find the alias URL, fall back to other patterns
-  const standardUrlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL|✨\s*Deployment complete! Take a peek over at)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
+  // And finally any standard URL format
+  const standardUrlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
   const standardMatch = deployOutput.match(standardUrlRegex);
   
   let deployUrl;
   
-  if (aliasMatch && aliasMatch[1]) {
+  if (primaryMatch && primaryMatch[1]) {
+    deployUrl = primaryMatch[1].trim();
+    core.info(`Using primary deployment URL: ${deployUrl}`);
+  } else if (aliasMatch && aliasMatch[1]) {
     deployUrl = aliasMatch[1].trim();
-    core.info(`Deployment successful (alias URL): ${deployUrl}`);
+    core.info(`Using alias deployment URL: ${deployUrl}`);
   } else if (standardMatch && standardMatch[1]) {
     deployUrl = standardMatch[1].trim();
-    core.info(`Deployment successful: ${deployUrl}`);
+    core.info(`Using standard deployment URL: ${deployUrl}`);
   } else {
     core.warning('Could not extract deployment URL from output. Deployment might have succeeded, but no URL was found.');
     deployUrl = `https://${branch === 'main' ? '' : branch + '.'}${projectName}.pages.dev`;
@@ -455,47 +620,6 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   
   core.setOutput('url', deployUrl);
   return deployUrl;
-}
-
-/**
- * Deletes a Cloudflare Pages project
- * @param {string} projectName - Name of the Cloudflare Pages project to delete
- * @param {string} token - Cloudflare API token
- * @param {string} accountId - Cloudflare account ID
- * @returns {Promise<void>}
- */
-async function deleteFromCloudflare(projectName, token, accountId) {
-  core.info(`Deleting Cloudflare Pages project "${projectName}"`);
-  
-  let errorOutput = '';
-  const options = {
-    listeners: {
-      stderr: (data) => {
-        errorOutput += data.toString();
-      }
-    }
-  };
-
-  try {
-    await exec.exec('npx', ['wrangler@4', 'pages', 'project', 'delete', projectName, '--yes'], options);
-    core.info(`Successfully deleted project "${projectName}"`);
-  } catch (error) {
-    if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
-      core.warning(`Project "${projectName}" does not exist or is already deleted.`);
-    } else if (errorOutput.includes('too many deployments') || errorOutput.includes('8000076')) {
-      // If we hit the "too many deployments" error, try the API delete method instead
-      try {
-        core.info('Attempting to delete project via API instead...');
-        const path = `/client/v4/accounts/${accountId}/pages/projects/${projectName}`;
-        await cloudflareApiRequest('DELETE', path, token);
-        core.info(`Successfully deleted project "${projectName}" via API`);
-      } catch (apiError) {
-        throw new Error(`Failed to delete project via API: ${apiError.message}`);
-      }
-    } else {
-      throw new Error(`Failed to delete project: ${errorOutput || error.message}`);
-    }
-  }
 }
 
 run();
