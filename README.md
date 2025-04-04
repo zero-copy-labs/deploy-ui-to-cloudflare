@@ -5,8 +5,8 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 ## Features
 
 - Deploy static sites to Cloudflare Pages
-- Automatically create Cloudflare Pages projects if they don't exist
-- Delete existing Cloudflare Pages projects
+- Manage deployments within projects (create, list, delete)
+- Automatically clean up old deployments to prevent hitting deployment limits
 - Configure custom headers for deployed sites
 - Create GitHub deployments for PR previews with automatic cleanup
 - Automatically comment on PRs with deployment URLs
@@ -69,6 +69,22 @@ Automatically create the Cloudflare Pages project if it does not exist. Defaults
 When set to "true", the action will create the project if it doesn't exist before attempting to deploy.
 Set to "false" if you want the action to fail when the project doesn't exist.
 
+### `CLEANUP_OLD_DEPLOYMENTS`
+
+Clean up old deployments to avoid hitting the deployment limit. Defaults to "false".
+When set to "true", the action will clean up old deployments after creating a new one.
+
+### `DEPLOYMENT_PREFIX`
+
+Prefix to match when cleaning up or deleting deployments. Defaults to empty string.
+When provided with `EVENT: "delete"`, only deployments that match this prefix will be deleted.
+Recommended format: `pr-{PR_NUMBER}` to target deployments for specific PRs.
+
+### `KEEP_DEPLOYMENTS`
+
+Number of deployments to keep when cleaning up. Defaults to "5".
+Only the most recent deployments matching the prefix will be kept, older ones will be deleted.
+
 ## Outputs
 
 ### `url`
@@ -77,7 +93,7 @@ The URL of the deployed site (only available when EVENT is "deploy").
 
 ## Example usage
 
-### Deploy to Cloudflare Pages with GitHub Deployment
+### Deploy to Cloudflare Pages with GitHub Deployment and Deployment Management
 
 ```yaml
 name: Deploy PR Preview
@@ -120,6 +136,12 @@ jobs:
           HEADERS: '{"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}}'
           GITHUB_TOKEN: ${{ github.token }}
           ENVIRONMENT_NAME: 'preview'
+          CLEANUP_OLD_DEPLOYMENTS: 'true'
+          DEPLOYMENT_PREFIX: 'pr-${{ github.event.pull_request.number }}'
+          KEEP_DEPLOYMENTS: '10'
+      
+      - name: Output deployment URL
+        run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
 ### Standard Deployment Without GitHub Deployments
@@ -166,10 +188,10 @@ jobs:
         run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
-### Delete a deployment and clean up GitHub deployments
+### Delete Specific Deployments for a PR
 
 ```yaml
-name: Cleanup Cloudflare Pages Project
+name: Cleanup PR Preview
 
 on:
   pull_request:
@@ -182,7 +204,13 @@ jobs:
       deployments: write
       pull-requests: write
     steps:
-      - name: Delete Cloudflare Pages deployment
+      - name: Extract PR Information
+        id: pr-info
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          echo "DEPLOYMENT_PREFIX=pr-${PR_NUMBER}" >> $GITHUB_ENV
+
+      - name: Delete Deployments and Deactivate GitHub Deployment
         uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
         with:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -190,8 +218,9 @@ jobs:
           PROJECT_NAME: 'my-project'
           DIST_FOLDER: '.'  # Not used for delete but required
           EVENT: 'delete'
-          GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments and posting comments
+          GITHUB_TOKEN: ${{ github.token }}
           ENVIRONMENT_NAME: 'preview'
+          DEPLOYMENT_PREFIX: ${{ env.DEPLOYMENT_PREFIX }}
 ```
 
 ## Troubleshooting
@@ -210,7 +239,7 @@ jobs:
 
 6. **PR comments not showing**: Ensure your workflow has the `pull-requests: write` permission.
 
-7. **"Too many deployments" error**: For projects with too many deployments, we recommend using unique project names per PR (e.g., `pr-{PR_NUMBER}-preview`) rather than reusing the same project for all PRs. The action will automatically create these projects as needed.
+7. **"Too many deployments" error**: This action now handles the "too many deployments" error by allowing selective cleanup of old deployments. Use the `CLEANUP_OLD_DEPLOYMENTS` flag and `DEPLOYMENT_PREFIX` to manage deployments efficiently without hitting Cloudflare's limits.
 
 ## License
 
