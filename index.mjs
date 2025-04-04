@@ -48,6 +48,13 @@ async function run() {
       }
     } else {
       await deleteFromCloudflare(projectName);
+      
+      // Deactivate GitHub deployments if token is provided
+      if (githubToken) {
+        await deactivateGitHubDeployments(githubToken, environmentName);
+      } else {
+        core.info('No GitHub token provided, skipping deployment deactivation');
+      }
     }
 
   } catch (error) {
@@ -108,6 +115,63 @@ async function createGitHubDeployment(token, url, environment) {
     }
   } catch (error) {
     core.warning(`Error setting up GitHub deployment: ${error.message}`);
+  }
+}
+
+/**
+ * Deactivates any active GitHub deployments for the PR
+ * @param {string} token - GitHub token
+ * @param {string} environment - Base environment name
+ * @returns {Promise<void>}
+ */
+async function deactivateGitHubDeployments(token, environment) {
+  try {
+    const octokit = github.getOctokit(token);
+    const context = github.context;
+    
+    // Only deactivate deployments for pull requests
+    if (!context.payload.pull_request) {
+      core.info('Not a pull request, skipping GitHub deployment deactivation');
+      return;
+    }
+    
+    const prNumber = context.payload.pull_request.number;
+    const envName = `${environment}/pr-${prNumber}`;
+    
+    core.info(`Deactivating GitHub deployments for PR #${prNumber} in environment ${envName}`);
+    
+    try {
+      // Get active deployments for this environment
+      const deployments = await octokit.rest.repos.listDeployments({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        environment: envName,
+      });
+      
+      if (deployments.data.length === 0) {
+        core.info('No active deployments found for this environment');
+        return;
+      }
+      
+      // Mark each deployment as inactive
+      for (const deployment of deployments.data) {
+        await octokit.rest.repos.createDeploymentStatus({
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          deployment_id: deployment.id,
+          state: 'inactive',
+          description: 'Environment was cleaned up',
+        });
+        core.info(`Deactivated deployment ${deployment.id}`);
+      }
+      
+      core.info(`Successfully deactivated ${deployments.data.length} deployment(s)`);
+    } catch (error) {
+      // Don't fail the action if deactivation fails
+      core.warning(`Failed to deactivate GitHub deployments: ${error.message}`);
+    }
+  } catch (error) {
+    core.warning(`Error deactivating GitHub deployments: ${error.message}`);
   }
 }
 

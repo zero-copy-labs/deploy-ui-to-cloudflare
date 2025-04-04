@@ -25483,6 +25483,11 @@ async function run() {
       }
     } else {
       await deleteFromCloudflare(projectName);
+      if (githubToken) {
+        await deactivateGitHubDeployments(githubToken, environmentName);
+      } else {
+        core.info("No GitHub token provided, skipping deployment deactivation");
+      }
     }
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
@@ -25524,6 +25529,45 @@ async function createGitHubDeployment(token, url, environment) {
     }
   } catch (error) {
     core.warning(`Error setting up GitHub deployment: ${error.message}`);
+  }
+}
+async function deactivateGitHubDeployments(token, environment) {
+  try {
+    const octokit = github.getOctokit(token);
+    const context2 = github.context;
+    if (!context2.payload.pull_request) {
+      core.info("Not a pull request, skipping GitHub deployment deactivation");
+      return;
+    }
+    const prNumber = context2.payload.pull_request.number;
+    const envName = `${environment}/pr-${prNumber}`;
+    core.info(`Deactivating GitHub deployments for PR #${prNumber} in environment ${envName}`);
+    try {
+      const deployments = await octokit.rest.repos.listDeployments({
+        owner: context2.repo.owner,
+        repo: context2.repo.repo,
+        environment: envName
+      });
+      if (deployments.data.length === 0) {
+        core.info("No active deployments found for this environment");
+        return;
+      }
+      for (const deployment of deployments.data) {
+        await octokit.rest.repos.createDeploymentStatus({
+          owner: context2.repo.owner,
+          repo: context2.repo.repo,
+          deployment_id: deployment.id,
+          state: "inactive",
+          description: "Environment was cleaned up"
+        });
+        core.info(`Deactivated deployment ${deployment.id}`);
+      }
+      core.info(`Successfully deactivated ${deployments.data.length} deployment(s)`);
+    } catch (error) {
+      core.warning(`Failed to deactivate GitHub deployments: ${error.message}`);
+    }
+  } catch (error) {
+    core.warning(`Error deactivating GitHub deployments: ${error.message}`);
   }
 }
 async function deployToCloudflare(distFolder, projectName, branch, headersJson) {

@@ -7,7 +7,7 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 - Deploy static sites to Cloudflare Pages
 - Delete existing Cloudflare Pages projects
 - Configure custom headers for deployed sites
-- Create GitHub deployments for PR previews
+- Create GitHub deployments for PR previews with automatic cleanup
 - Works with Wrangler v4
 - Returns the deployment URL
 
@@ -53,6 +53,7 @@ Example:
 
 GitHub token for creating deployment statuses on the PR. This will add visible deployments to pull requests.
 If not provided, the action will not create a GitHub deployment (no error will be thrown).
+When used with `EVENT: "delete"`, this token will also deactivate any GitHub deployments for the PR.
 
 ### `ENVIRONMENT_NAME`
 
@@ -159,7 +160,7 @@ jobs:
         run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
-### Delete a deployment
+### Delete a deployment and clean up GitHub deployments
 
 ```yaml
 name: Cleanup Cloudflare Pages Project
@@ -171,6 +172,8 @@ on:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    permissions:
+      deployments: write
     steps:
       - name: Delete Cloudflare Pages deployment
         uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
@@ -180,6 +183,8 @@ jobs:
           PROJECT_NAME: 'my-project'
           DIST_FOLDER: '.'  # Not used for delete but required
           EVENT: 'delete'
+          GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments
+          ENVIRONMENT_NAME: 'preview'
 ```
 
 ## Troubleshooting
