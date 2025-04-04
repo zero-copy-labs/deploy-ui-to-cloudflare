@@ -306,7 +306,7 @@ var require_tunnel = __commonJS({
     var net = require("net");
     var tls = require("tls");
     var http = require("http");
-    var https = require("https");
+    var https2 = require("https");
     var events = require("events");
     var assert = require("assert");
     var util = require("util");
@@ -328,12 +328,12 @@ var require_tunnel = __commonJS({
     }
     function httpOverHttps(options) {
       var agent = new TunnelingAgent(options);
-      agent.request = https.request;
+      agent.request = https2.request;
       return agent;
     }
     function httpsOverHttps(options) {
       var agent = new TunnelingAgent(options);
-      agent.request = https.request;
+      agent.request = https2.request;
       agent.createSocket = createSecureSocket;
       agent.defaultPort = 443;
       return agent;
@@ -17394,7 +17394,7 @@ var require_lib = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.HttpClient = exports.isHttps = exports.HttpClientResponse = exports.HttpClientError = exports.getProxyUrl = exports.MediaTypes = exports.Headers = exports.HttpCodes = void 0;
     var http = __importStar(require("http"));
-    var https = __importStar(require("https"));
+    var https2 = __importStar(require("https"));
     var pm = __importStar(require_proxy());
     var tunnel = __importStar(require_tunnel2());
     var undici_1 = require_undici();
@@ -17785,7 +17785,7 @@ var require_lib = __commonJS({
         const info2 = {};
         info2.parsedUrl = requestUrl;
         const usingSsl = info2.parsedUrl.protocol === "https:";
-        info2.httpModule = usingSsl ? https : http;
+        info2.httpModule = usingSsl ? https2 : http;
         const defaultPort = usingSsl ? 443 : 80;
         info2.options = {};
         info2.options.host = info2.parsedUrl.hostname;
@@ -17855,7 +17855,7 @@ var require_lib = __commonJS({
         }
         if (!agent) {
           const options = { keepAlive: this._keepAlive, maxSockets };
-          agent = usingSsl ? new https.Agent(options) : new http.Agent(options);
+          agent = usingSsl ? new https2.Agent(options) : new http.Agent(options);
           this._agent = agent;
         }
         if (usingSsl && this._ignoreSslError) {
@@ -22280,7 +22280,7 @@ var require_lib3 = __commonJS({
     var http = _interopDefault(require("http"));
     var Url = _interopDefault(require("url"));
     var whatwgUrl = _interopDefault(require_public_api());
-    var https = _interopDefault(require("https"));
+    var https2 = _interopDefault(require("https"));
     var zlib = _interopDefault(require("zlib"));
     var Readable = Stream.Readable;
     var BUFFER = Symbol("buffer");
@@ -23275,7 +23275,7 @@ var require_lib3 = __commonJS({
       return new fetch.Promise(function(resolve, reject) {
         const request = new Request(url, opts);
         const options = getNodeRequestOptions(request);
-        const send = (options.protocol === "https:" ? https : http).request;
+        const send = (options.protocol === "https:" ? https2 : http).request;
         const signal = request.signal;
         let response = null;
         const abort = function abort2() {
@@ -25451,6 +25451,7 @@ var exec = __toESM(require_exec(), 1);
 var github = __toESM(require_github(), 1);
 var import_fs = require("fs");
 var import_path = __toESM(require("path"), 1);
+var import_https = __toESM(require("https"), 1);
 async function run() {
   try {
     const cloudflareApiToken = core.getInput("CLOUDFLARE_API_TOKEN", { required: true });
@@ -25483,7 +25484,17 @@ async function run() {
         core.info("No GitHub token provided, skipping deployment status creation and PR comment");
       }
     } else {
-      await deleteFromCloudflare(projectName);
+      try {
+        await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
+      } catch (error) {
+        if (error.message.includes("too many deployments") || error.message.includes("8000076")) {
+          core.warning("Project has too many deployments. Attempting to clean up individual deployments first...");
+          await cleanupDeployments(projectName, cloudflareApiToken, cloudflareAccountId);
+          await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
+        } else {
+          throw error;
+        }
+      }
       if (githubToken) {
         await deactivateGitHubDeployments(githubToken, environmentName);
         await commentOnPRCleanup(githubToken);
@@ -25493,6 +25504,88 @@ async function run() {
     }
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
+  }
+}
+async function cloudflareApiRequest(method, path2, token, body = null) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: "api.cloudflare.com",
+      port: 443,
+      path: path2,
+      method,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      }
+    };
+    const req = import_https.default.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const parsedData = JSON.parse(data);
+            resolve(parsedData);
+          } catch (e) {
+            reject(new Error(`Failed to parse Cloudflare API response: ${e.message}`));
+          }
+        } else {
+          reject(new Error(`Cloudflare API returned ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+    req.on("error", (error) => {
+      reject(new Error(`Request to Cloudflare API failed: ${error.message}`));
+    });
+    if (body) {
+      req.write(JSON.stringify(body));
+    }
+    req.end();
+  });
+}
+async function listDeployments(projectName, token, accountId) {
+  const path2 = `/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments`;
+  const response = await cloudflareApiRequest("GET", path2, token);
+  return response.result;
+}
+async function deleteDeployment(projectName, deploymentId, token, accountId) {
+  const path2 = `/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments/${deploymentId}`;
+  await cloudflareApiRequest("DELETE", path2, token);
+  core.info(`Deleted deployment ${deploymentId} for project ${projectName}`);
+}
+async function cleanupDeployments(projectName, token, accountId) {
+  try {
+    core.info(`Cleaning up deployments for project ${projectName}`);
+    const deployments = await listDeployments(projectName, token, accountId);
+    if (!deployments || deployments.length === 0) {
+      core.info("No deployments found to clean up");
+      return;
+    }
+    core.info(`Found ${deployments.length} deployments. Will delete non-production deployments...`);
+    const sortedDeployments = deployments.sort((a, b) => {
+      return new Date(a.created_on) - new Date(b.created_on);
+    });
+    const productionDeployment = sortedDeployments.find((d) => d.environment === "production");
+    const deploymentsToDelete = productionDeployment ? sortedDeployments.filter((d) => d.id !== productionDeployment.id) : sortedDeployments;
+    const deploymentsToKeep = 5;
+    const deploymentsToActuallyDelete = deploymentsToDelete.slice(
+      0,
+      deploymentsToDelete.length - deploymentsToKeep
+    );
+    if (deploymentsToActuallyDelete.length === 0) {
+      core.warning(`Only found ${deploymentsToDelete.length} deployments to delete, which is less than the threshold (${deploymentsToKeep}). Trying to delete the project anyway.`);
+      return;
+    }
+    core.info(`Deleting ${deploymentsToActuallyDelete.length} deployments...`);
+    for (const deployment of deploymentsToActuallyDelete) {
+      await deleteDeployment(projectName, deployment.id, token, accountId);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    core.info(`Successfully deleted ${deploymentsToActuallyDelete.length} deployments`);
+  } catch (error) {
+    core.warning(`Error cleaning up deployments: ${error.message}. Will try to delete the project anyway.`);
   }
 }
 async function commentOnPR(token, deployUrl) {
@@ -25682,7 +25775,7 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   core.setOutput("url", deployUrl);
   return deployUrl;
 }
-async function deleteFromCloudflare(projectName) {
+async function deleteFromCloudflare(projectName, token, accountId) {
   core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
   let errorOutput = "";
   const options = {
@@ -25698,6 +25791,8 @@ async function deleteFromCloudflare(projectName) {
   } catch (error) {
     if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
       core.warning(`Project "${projectName}" does not exist or is already deleted.`);
+    } else if (errorOutput.includes("too many deployments") || errorOutput.includes("8000076")) {
+      throw new Error(`Project has too many deployments to be deleted: ${errorOutput}`);
     } else {
       throw new Error(`Failed to delete project: ${errorOutput || error.message}`);
     }

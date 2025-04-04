@@ -5,7 +5,7 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 ## Features
 
 - Deploy static sites to Cloudflare Pages
-- Delete existing Cloudflare Pages projects
+- Delete existing Cloudflare Pages projects (with automatic cleanup of excess deployments)
 - Configure custom headers for deployed sites
 - Create GitHub deployments for PR previews with automatic cleanup
 - Automatically comment on PRs with deployment URLs
@@ -202,6 +202,8 @@ jobs:
 5. **GitHub deployments not showing**: Ensure your workflow has the `deployments: write` permission.
 
 6. **PR comments not showing**: Ensure your workflow has the `pull-requests: write` permission.
+
+7. **"Too many deployments" error**: The action will automatically handle this by cleaning up older deployments before attempting to delete the project. If you continue to see this error, you may need to manually delete some deployments through the Cloudflare dashboard or API.
 
 ## License
 
