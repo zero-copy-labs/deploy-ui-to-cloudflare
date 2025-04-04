@@ -5,7 +5,8 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 ## Features
 
 - Deploy static sites to Cloudflare Pages
-- Delete existing Cloudflare Pages projects (with automatic cleanup of excess deployments)
+- Automatically create Cloudflare Pages projects if they don't exist
+- Delete existing Cloudflare Pages projects
 - Configure custom headers for deployed sites
 - Create GitHub deployments for PR previews with automatic cleanup
 - Automatically comment on PRs with deployment URLs
@@ -61,6 +62,12 @@ Additionally, when provided, the action will automatically post comments on the 
 
 Name of the environment for GitHub deployment. Defaults to "preview".
 The full environment name will be `{ENVIRONMENT_NAME}/pr-{PR_NUMBER}`.
+
+### `CREATE_PROJECT_IF_MISSING`
+
+Automatically create the Cloudflare Pages project if it does not exist. Defaults to "true".
+When set to "true", the action will create the project if it doesn't exist before attempting to deploy.
+Set to "false" if you want the action to fail when the project doesn't exist.
 
 ## Outputs
 
@@ -203,7 +210,7 @@ jobs:
 
 6. **PR comments not showing**: Ensure your workflow has the `pull-requests: write` permission.
 
-7. **"Too many deployments" error**: The action will automatically handle this by cleaning up older deployments before attempting to delete the project. If you continue to see this error, you may need to manually delete some deployments through the Cloudflare dashboard or API.
+7. **"Too many deployments" error**: For projects with too many deployments, we recommend using unique project names per PR (e.g., `pr-{PR_NUMBER}-preview`) rather than reusing the same project for all PRs. The action will automatically create these projects as needed.
 
 ## License
 

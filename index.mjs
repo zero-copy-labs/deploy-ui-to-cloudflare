@@ -21,6 +21,7 @@ async function run() {
     const headers = core.getInput('HEADERS') || '{}';
     const githubToken = core.getInput('GITHUB_TOKEN');
     const environmentName = core.getInput('ENVIRONMENT_NAME') || 'preview';
+    const createProjectIfMissing = core.getBooleanInput('CREATE_PROJECT_IF_MISSING') || true;
 
     if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
       throw new Error('Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty');
@@ -39,6 +40,18 @@ async function run() {
     process.env.CLOUDFLARE_ACCOUNT_ID = cloudflareAccountId;
 
     if (event === 'deploy') {
+      // Check if project exists and create it if needed
+      const projectExists = await checkProjectExists(projectName, cloudflareApiToken, cloudflareAccountId);
+      
+      if (!projectExists) {
+        if (createProjectIfMissing) {
+          core.info(`Project "${projectName}" does not exist. Creating it...`);
+          await createProject(projectName, cloudflareApiToken, cloudflareAccountId);
+        } else {
+          throw new Error(`Project "${projectName}" does not exist and CREATE_PROJECT_IF_MISSING is set to false`);
+        }
+      }
+      
       const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
       
       // If we have a GitHub token, create a deployment and post a comment
@@ -49,18 +62,13 @@ async function run() {
         core.info('No GitHub token provided, skipping deployment status creation and PR comment');
       }
     } else {
-      try {
+      // For delete operations, check if the project exists first to avoid unnecessary errors
+      const projectExists = await checkProjectExists(projectName, cloudflareApiToken, cloudflareAccountId);
+      
+      if (projectExists) {
         await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
-      } catch (error) {
-        // If the error is due to too many deployments, attempt to clean up deployments first
-        if (error.message.includes('too many deployments') || error.message.includes('8000076')) {
-          core.warning('Project has too many deployments. Attempting to clean up individual deployments first...');
-          await cleanupDeployments(projectName, cloudflareApiToken, cloudflareAccountId);
-          // Try deleting the project again
-          await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
-        } else {
-          throw error;
-        }
+      } else {
+        core.info(`Project "${projectName}" does not exist. Nothing to delete.`);
       }
       
       // If we have a GitHub token, deactivate deployments and post a cleanup comment
@@ -106,15 +114,16 @@ async function cloudflareApiRequest(method, path, token, body = null) {
       });
       
       res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try {
-            const parsedData = JSON.parse(data);
+        try {
+          const parsedData = JSON.parse(data);
+          
+          if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve(parsedData);
-          } catch (e) {
-            reject(new Error(`Failed to parse Cloudflare API response: ${e.message}`));
+          } else {
+            reject(new Error(`Cloudflare API returned ${res.statusCode}: ${JSON.stringify(parsedData)}`));
           }
-        } else {
-          reject(new Error(`Cloudflare API returned ${res.statusCode}: ${data}`));
+        } catch (e) {
+          reject(new Error(`Failed to parse Cloudflare API response: ${e.message}`));
         }
       });
     });
@@ -132,85 +141,50 @@ async function cloudflareApiRequest(method, path, token, body = null) {
 }
 
 /**
- * List all deployments for a Cloudflare Pages project
+ * Check if a Cloudflare Pages project exists
  * @param {string} projectName - Project name
  * @param {string} token - Cloudflare API token
  * @param {string} accountId - Cloudflare account ID
- * @returns {Promise<array>} - List of deployments
+ * @returns {Promise<boolean>} - True if project exists, false otherwise
  */
-async function listDeployments(projectName, token, accountId) {
-  const path = `/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments`;
-  const response = await cloudflareApiRequest('GET', path, token);
-  return response.result;
-}
-
-/**
- * Delete a specific deployment
- * @param {string} projectName - Project name
- * @param {string} deploymentId - Deployment ID
- * @param {string} token - Cloudflare API token
- * @param {string} accountId - Cloudflare account ID
- * @returns {Promise<void>}
- */
-async function deleteDeployment(projectName, deploymentId, token, accountId) {
-  const path = `/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments/${deploymentId}`;
-  await cloudflareApiRequest('DELETE', path, token);
-  core.info(`Deleted deployment ${deploymentId} for project ${projectName}`);
-}
-
-/**
- * Delete all deployments for a project (or at least enough to allow project deletion)
- * @param {string} projectName - Project name
- * @param {string} token - Cloudflare API token
- * @param {string} accountId - Cloudflare account ID
- * @returns {Promise<void>}
- */
-async function cleanupDeployments(projectName, token, accountId) {
+async function checkProjectExists(projectName, token, accountId) {
   try {
-    core.info(`Cleaning up deployments for project ${projectName}`);
-    const deployments = await listDeployments(projectName, token, accountId);
-    
-    if (!deployments || deployments.length === 0) {
-      core.info('No deployments found to clean up');
-      return;
-    }
-    
-    core.info(`Found ${deployments.length} deployments. Will delete non-production deployments...`);
-    
-    // Sort deployments by creation date (oldest first)
-    const sortedDeployments = deployments.sort((a, b) => {
-      return new Date(a.created_on) - new Date(b.created_on);
-    });
-    
-    // Delete deployments, keeping the most recent production one if possible
-    const productionDeployment = sortedDeployments.find(d => d.environment === 'production');
-    const deploymentsToDelete = productionDeployment 
-      ? sortedDeployments.filter(d => d.id !== productionDeployment.id)
-      : sortedDeployments;
-    
-    // Keep only 5 most recent deployments to avoid hitting API rate limits
-    const deploymentsToKeep = 5;
-    const deploymentsToActuallyDelete = deploymentsToDelete.slice(
-      0, 
-      deploymentsToDelete.length - deploymentsToKeep
-    );
-    
-    if (deploymentsToActuallyDelete.length === 0) {
-      core.warning(`Only found ${deploymentsToDelete.length} deployments to delete, which is less than the threshold (${deploymentsToKeep}). Trying to delete the project anyway.`);
-      return;
-    }
-    
-    core.info(`Deleting ${deploymentsToActuallyDelete.length} deployments...`);
-    
-    for (const deployment of deploymentsToActuallyDelete) {
-      await deleteDeployment(projectName, deployment.id, token, accountId);
-      // Add a small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    
-    core.info(`Successfully deleted ${deploymentsToActuallyDelete.length} deployments`);
+    const path = `/client/v4/accounts/${accountId}/pages/projects/${projectName}`;
+    await cloudflareApiRequest('GET', path, token);
+    core.info(`Project "${projectName}" exists`);
+    return true;
   } catch (error) {
-    core.warning(`Error cleaning up deployments: ${error.message}. Will try to delete the project anyway.`);
+    // 404 means project doesn't exist, which is not an error for our purposes
+    if (error.message.includes('404')) {
+      core.info(`Project "${projectName}" does not exist`);
+      return false;
+    }
+    
+    // For other errors, log and rethrow
+    core.warning(`Error checking if project exists: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Create a new Cloudflare Pages project
+ * @param {string} projectName - Project name
+ * @param {string} token - Cloudflare API token
+ * @param {string} accountId - Cloudflare account ID
+ * @returns {Promise<void>}
+ */
+async function createProject(projectName, token, accountId) {
+  try {
+    const path = `/client/v4/accounts/${accountId}/pages/projects`;
+    const body = {
+      name: projectName,
+      production_branch: 'main'
+    };
+    
+    await cloudflareApiRequest('POST', path, token, body);
+    core.info(`Successfully created project "${projectName}"`);
+  } catch (error) {
+    throw new Error(`Failed to create project: ${error.message}`);
   }
 }
 
@@ -491,7 +465,7 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
  * @returns {Promise<void>}
  */
 async function deleteFromCloudflare(projectName, token, accountId) {
-  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
+  core.info(`Deleting Cloudflare Pages project "${projectName}"`);
   
   let errorOutput = '';
   const options = {
@@ -509,7 +483,15 @@ async function deleteFromCloudflare(projectName, token, accountId) {
     if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
       core.warning(`Project "${projectName}" does not exist or is already deleted.`);
     } else if (errorOutput.includes('too many deployments') || errorOutput.includes('8000076')) {
-      throw new Error(`Project has too many deployments to be deleted: ${errorOutput}`);
+      // If we hit the "too many deployments" error, try the API delete method instead
+      try {
+        core.info('Attempting to delete project via API instead...');
+        const path = `/client/v4/accounts/${accountId}/pages/projects/${projectName}`;
+        await cloudflareApiRequest('DELETE', path, token);
+        core.info(`Successfully deleted project "${projectName}" via API`);
+      } catch (apiError) {
+        throw new Error(`Failed to delete project via API: ${apiError.message}`);
+      }
     } else {
       throw new Error(`Failed to delete project: ${errorOutput || error.message}`);
     }

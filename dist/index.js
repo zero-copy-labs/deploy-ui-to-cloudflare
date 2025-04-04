@@ -19777,7 +19777,7 @@ var require_core = __commonJS({
       return inputs.map((input) => input.trim());
     }
     exports.getMultilineInput = getMultilineInput;
-    function getBooleanInput(name, options) {
+    function getBooleanInput2(name, options) {
       const trueValue = ["true", "True", "TRUE"];
       const falseValue = ["false", "False", "FALSE"];
       const val = getInput2(name, options);
@@ -19788,7 +19788,7 @@ var require_core = __commonJS({
       throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}
 Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
     }
-    exports.getBooleanInput = getBooleanInput;
+    exports.getBooleanInput = getBooleanInput2;
     function setOutput2(name, value) {
       const filePath = process.env["GITHUB_OUTPUT"] || "";
       if (filePath) {
@@ -25463,6 +25463,7 @@ async function run() {
     const headers = core.getInput("HEADERS") || "{}";
     const githubToken = core.getInput("GITHUB_TOKEN");
     const environmentName = core.getInput("ENVIRONMENT_NAME") || "preview";
+    const createProjectIfMissing = core.getBooleanInput("CREATE_PROJECT_IF_MISSING") || true;
     if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
       throw new Error("Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty");
     }
@@ -25476,6 +25477,15 @@ async function run() {
     process.env.CLOUDFLARE_API_TOKEN = cloudflareApiToken;
     process.env.CLOUDFLARE_ACCOUNT_ID = cloudflareAccountId;
     if (event === "deploy") {
+      const projectExists = await checkProjectExists(projectName, cloudflareApiToken, cloudflareAccountId);
+      if (!projectExists) {
+        if (createProjectIfMissing) {
+          core.info(`Project "${projectName}" does not exist. Creating it...`);
+          await createProject(projectName, cloudflareApiToken, cloudflareAccountId);
+        } else {
+          throw new Error(`Project "${projectName}" does not exist and CREATE_PROJECT_IF_MISSING is set to false`);
+        }
+      }
       const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
       if (githubToken) {
         await createGitHubDeployment(githubToken, deployUrl, environmentName);
@@ -25484,16 +25494,11 @@ async function run() {
         core.info("No GitHub token provided, skipping deployment status creation and PR comment");
       }
     } else {
-      try {
+      const projectExists = await checkProjectExists(projectName, cloudflareApiToken, cloudflareAccountId);
+      if (projectExists) {
         await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
-      } catch (error) {
-        if (error.message.includes("too many deployments") || error.message.includes("8000076")) {
-          core.warning("Project has too many deployments. Attempting to clean up individual deployments first...");
-          await cleanupDeployments(projectName, cloudflareApiToken, cloudflareAccountId);
-          await deleteFromCloudflare(projectName, cloudflareApiToken, cloudflareAccountId);
-        } else {
-          throw error;
-        }
+      } else {
+        core.info(`Project "${projectName}" does not exist. Nothing to delete.`);
       }
       if (githubToken) {
         await deactivateGitHubDeployments(githubToken, environmentName);
@@ -25524,15 +25529,15 @@ async function cloudflareApiRequest(method, path2, token, body = null) {
         data += chunk;
       });
       res.on("end", () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try {
-            const parsedData = JSON.parse(data);
+        try {
+          const parsedData = JSON.parse(data);
+          if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve(parsedData);
-          } catch (e) {
-            reject(new Error(`Failed to parse Cloudflare API response: ${e.message}`));
+          } else {
+            reject(new Error(`Cloudflare API returned ${res.statusCode}: ${JSON.stringify(parsedData)}`));
           }
-        } else {
-          reject(new Error(`Cloudflare API returned ${res.statusCode}: ${data}`));
+        } catch (e) {
+          reject(new Error(`Failed to parse Cloudflare API response: ${e.message}`));
         }
       });
     });
@@ -25545,47 +25550,32 @@ async function cloudflareApiRequest(method, path2, token, body = null) {
     req.end();
   });
 }
-async function listDeployments(projectName, token, accountId) {
-  const path2 = `/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments`;
-  const response = await cloudflareApiRequest("GET", path2, token);
-  return response.result;
-}
-async function deleteDeployment(projectName, deploymentId, token, accountId) {
-  const path2 = `/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments/${deploymentId}`;
-  await cloudflareApiRequest("DELETE", path2, token);
-  core.info(`Deleted deployment ${deploymentId} for project ${projectName}`);
-}
-async function cleanupDeployments(projectName, token, accountId) {
+async function checkProjectExists(projectName, token, accountId) {
   try {
-    core.info(`Cleaning up deployments for project ${projectName}`);
-    const deployments = await listDeployments(projectName, token, accountId);
-    if (!deployments || deployments.length === 0) {
-      core.info("No deployments found to clean up");
-      return;
-    }
-    core.info(`Found ${deployments.length} deployments. Will delete non-production deployments...`);
-    const sortedDeployments = deployments.sort((a, b) => {
-      return new Date(a.created_on) - new Date(b.created_on);
-    });
-    const productionDeployment = sortedDeployments.find((d) => d.environment === "production");
-    const deploymentsToDelete = productionDeployment ? sortedDeployments.filter((d) => d.id !== productionDeployment.id) : sortedDeployments;
-    const deploymentsToKeep = 5;
-    const deploymentsToActuallyDelete = deploymentsToDelete.slice(
-      0,
-      deploymentsToDelete.length - deploymentsToKeep
-    );
-    if (deploymentsToActuallyDelete.length === 0) {
-      core.warning(`Only found ${deploymentsToDelete.length} deployments to delete, which is less than the threshold (${deploymentsToKeep}). Trying to delete the project anyway.`);
-      return;
-    }
-    core.info(`Deleting ${deploymentsToActuallyDelete.length} deployments...`);
-    for (const deployment of deploymentsToActuallyDelete) {
-      await deleteDeployment(projectName, deployment.id, token, accountId);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    core.info(`Successfully deleted ${deploymentsToActuallyDelete.length} deployments`);
+    const path2 = `/client/v4/accounts/${accountId}/pages/projects/${projectName}`;
+    await cloudflareApiRequest("GET", path2, token);
+    core.info(`Project "${projectName}" exists`);
+    return true;
   } catch (error) {
-    core.warning(`Error cleaning up deployments: ${error.message}. Will try to delete the project anyway.`);
+    if (error.message.includes("404")) {
+      core.info(`Project "${projectName}" does not exist`);
+      return false;
+    }
+    core.warning(`Error checking if project exists: ${error.message}`);
+    throw error;
+  }
+}
+async function createProject(projectName, token, accountId) {
+  try {
+    const path2 = `/client/v4/accounts/${accountId}/pages/projects`;
+    const body = {
+      name: projectName,
+      production_branch: "main"
+    };
+    await cloudflareApiRequest("POST", path2, token, body);
+    core.info(`Successfully created project "${projectName}"`);
+  } catch (error) {
+    throw new Error(`Failed to create project: ${error.message}`);
   }
 }
 async function commentOnPR(token, deployUrl) {
@@ -25776,7 +25766,7 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   return deployUrl;
 }
 async function deleteFromCloudflare(projectName, token, accountId) {
-  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
+  core.info(`Deleting Cloudflare Pages project "${projectName}"`);
   let errorOutput = "";
   const options = {
     listeners: {
@@ -25792,7 +25782,14 @@ async function deleteFromCloudflare(projectName, token, accountId) {
     if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
       core.warning(`Project "${projectName}" does not exist or is already deleted.`);
     } else if (errorOutput.includes("too many deployments") || errorOutput.includes("8000076")) {
-      throw new Error(`Project has too many deployments to be deleted: ${errorOutput}`);
+      try {
+        core.info("Attempting to delete project via API instead...");
+        const path2 = `/client/v4/accounts/${accountId}/pages/projects/${projectName}`;
+        await cloudflareApiRequest("DELETE", path2, token);
+        core.info(`Successfully deleted project "${projectName}" via API`);
+      } catch (apiError) {
+        throw new Error(`Failed to delete project via API: ${apiError.message}`);
+      }
     } else {
       throw new Error(`Failed to delete project: ${errorOutput || error.message}`);
     }
