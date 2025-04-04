@@ -25478,19 +25478,71 @@ async function run() {
       const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
       if (githubToken) {
         await createGitHubDeployment(githubToken, deployUrl, environmentName);
+        await commentOnPR(githubToken, deployUrl);
       } else {
-        core.info("No GitHub token provided, skipping deployment status creation");
+        core.info("No GitHub token provided, skipping deployment status creation and PR comment");
       }
     } else {
       await deleteFromCloudflare(projectName);
       if (githubToken) {
         await deactivateGitHubDeployments(githubToken, environmentName);
+        await commentOnPRCleanup(githubToken);
       } else {
-        core.info("No GitHub token provided, skipping deployment deactivation");
+        core.info("No GitHub token provided, skipping deployment deactivation and PR comment");
       }
     }
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
+  }
+}
+async function commentOnPR(token, deployUrl) {
+  try {
+    const octokit = github.getOctokit(token);
+    const context2 = github.context;
+    if (!context2.payload.pull_request) {
+      core.info("Not a pull request, skipping comment creation");
+      return;
+    }
+    const prNumber = context2.payload.pull_request.number;
+    core.info(`Posting deployment comment on PR #${prNumber}`);
+    try {
+      await octokit.rest.issues.createComment({
+        owner: context2.repo.owner,
+        repo: context2.repo.repo,
+        issue_number: prNumber,
+        body: `\u{1F680} PR Preview deployed to: ${deployUrl}`
+      });
+      core.info(`Successfully posted comment on PR #${prNumber}`);
+    } catch (error) {
+      core.warning(`Failed to post comment on PR: ${error.message}`);
+    }
+  } catch (error) {
+    core.warning(`Error posting comment on PR: ${error.message}`);
+  }
+}
+async function commentOnPRCleanup(token) {
+  try {
+    const octokit = github.getOctokit(token);
+    const context2 = github.context;
+    if (!context2.payload.pull_request) {
+      core.info("Not a pull request, skipping cleanup comment");
+      return;
+    }
+    const prNumber = context2.payload.pull_request.number;
+    core.info(`Posting cleanup comment on PR #${prNumber}`);
+    try {
+      await octokit.rest.issues.createComment({
+        owner: context2.repo.owner,
+        repo: context2.repo.repo,
+        issue_number: prNumber,
+        body: `\u{1F9F9} PR Preview environment has been cleaned up.`
+      });
+      core.info(`Successfully posted cleanup comment on PR #${prNumber}`);
+    } catch (error) {
+      core.warning(`Failed to post cleanup comment on PR: ${error.message}`);
+    }
+  } catch (error) {
+    core.warning(`Error posting cleanup comment on PR: ${error.message}`);
   }
 }
 async function createGitHubDeployment(token, url, environment) {
