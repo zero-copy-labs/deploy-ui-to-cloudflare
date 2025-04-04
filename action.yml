@@ -35,6 +35,10 @@ inputs:
     description: 'Name of the environment for GitHub deployment (e.g. "preview" or "production")'
     required: false
     default: 'preview'
+  CREATE_PROJECT_IF_MISSING:
+    description: 'Automatically create the Cloudflare Pages project if it does not exist'
+    required: false
+    default: 'true'
 outputs:
   url:
     description: 'URL of the deployed site (only available when EVENT is "deploy")'
