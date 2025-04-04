@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
+import * as github from '@actions/github';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -17,6 +18,8 @@ async function run() {
     const branch = core.getInput('BRANCH') || 'main';
     const event = core.getInput('EVENT') || 'deploy';
     const headers = core.getInput('HEADERS') || '{}';
+    const githubToken = core.getInput('GITHUB_TOKEN');
+    const environmentName = core.getInput('ENVIRONMENT_NAME') || 'preview';
 
     if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
       throw new Error('Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty');
@@ -27,11 +30,22 @@ async function run() {
     }
 
     core.setSecret(cloudflareApiToken);
+    if (githubToken) {
+      core.setSecret(githubToken);
+    }
+    
     process.env.CLOUDFLARE_API_TOKEN = cloudflareApiToken;
     process.env.CLOUDFLARE_ACCOUNT_ID = cloudflareAccountId;
 
     if (event === 'deploy') {
-      await deployToCloudflare(distFolder, projectName, branch, headers);
+      const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
+      
+      // Create GitHub deployment if token is provided
+      if (githubToken) {
+        await createGitHubDeployment(githubToken, deployUrl, environmentName);
+      } else {
+        core.info('No GitHub token provided, skipping deployment status creation');
+      }
     } else {
       await deleteFromCloudflare(projectName);
     }
@@ -42,12 +56,68 @@ async function run() {
 }
 
 /**
+ * Creates a GitHub deployment and deployment status
+ * @param {string} token - GitHub token
+ * @param {string} url - Deployment URL
+ * @param {string} environment - Environment name
+ * @returns {Promise<void>}
+ */
+async function createGitHubDeployment(token, url, environment) {
+  try {
+    const octokit = github.getOctokit(token);
+    const context = github.context;
+    
+    // Only create deployment for pull requests
+    if (!context.payload.pull_request) {
+      core.info('Not a pull request, skipping GitHub deployment creation');
+      return;
+    }
+    
+    const prNumber = context.payload.pull_request.number;
+    const sha = context.payload.pull_request.head.sha;
+    const envName = `${environment}/pr-${prNumber}`;
+    
+    core.info(`Creating GitHub deployment for PR #${prNumber} (${sha}) in environment ${envName}`);
+    
+    try {
+      // Create deployment
+      const deployment = await octokit.rest.repos.createDeployment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        ref: sha,
+        environment: envName,
+        auto_merge: false,
+        required_contexts: [],
+        transient_environment: true,
+      });
+      
+      // Create deployment status
+      await octokit.rest.repos.createDeploymentStatus({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        deployment_id: deployment.data.id,
+        state: 'success',
+        environment_url: url,
+        description: 'Preview deployment is live',
+      });
+      
+      core.info(`GitHub deployment created successfully: ${url}`);
+    } catch (error) {
+      // Don't fail the action if deployment creation fails
+      core.warning(`Failed to create GitHub deployment: ${error.message}`);
+    }
+  } catch (error) {
+    core.warning(`Error setting up GitHub deployment: ${error.message}`);
+  }
+}
+
+/**
  * Deploys a folder to Cloudflare Pages
  * @param {string} distFolder - Path to the distribution folder to deploy
  * @param {string} projectName - Cloudflare Pages project name
  * @param {string} branch - Branch name to deploy to
  * @param {string} headersJson - JSON string containing custom headers configuration
- * @returns {Promise<void>}
+ * @returns {Promise<string>} - URL of the deployed site
  */
 async function deployToCloudflare(distFolder, projectName, branch, headersJson) {
   core.info(`Deploying ${distFolder} to Cloudflare Pages project "${projectName}" on branch "${branch}"`);
@@ -94,19 +164,30 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
     throw new Error(`Wrangler deployment failed: ${errorOutput || error.message}`);
   }
 
-  const urlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
-  const match = deployOutput.match(urlRegex);
+  // First, try to extract the deployment alias URL (✨ Deployment alias URL: ...)
+  const aliasUrlRegex = /✨\s*Deployment alias URL:\s*(\bhttps?:\/\/[^\s]+\b)/i;
+  const aliasMatch = deployOutput.match(aliasUrlRegex);
   
-  if (match && match[1]) {
-    const deployUrl = match[1].trim();
+  // If we can't find the alias URL, fall back to other patterns
+  const standardUrlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL|✨\s*Deployment complete! Take a peek over at)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
+  const standardMatch = deployOutput.match(standardUrlRegex);
+  
+  let deployUrl;
+  
+  if (aliasMatch && aliasMatch[1]) {
+    deployUrl = aliasMatch[1].trim();
+    core.info(`Deployment successful (alias URL): ${deployUrl}`);
+  } else if (standardMatch && standardMatch[1]) {
+    deployUrl = standardMatch[1].trim();
     core.info(`Deployment successful: ${deployUrl}`);
-    core.setOutput('url', deployUrl);
   } else {
     core.warning('Could not extract deployment URL from output. Deployment might have succeeded, but no URL was found.');
-    const guessedUrl = `https://${branch === 'main' ? '' : branch + '.'}${projectName}.pages.dev`;
-    core.info(`Guessed deployment URL (may not be accurate): ${guessedUrl}`);
-    core.setOutput('url', guessedUrl);
+    deployUrl = `https://${branch === 'main' ? '' : branch + '.'}${projectName}.pages.dev`;
+    core.info(`Guessed deployment URL (may not be accurate): ${deployUrl}`);
   }
+  
+  core.setOutput('url', deployUrl);
+  return deployUrl;
 }
 
 /**
