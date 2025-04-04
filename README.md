@@ -7,7 +7,8 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 - Deploy static sites to Cloudflare Pages
 - Delete existing Cloudflare Pages projects
 - Configure custom headers for deployed sites
-- Create GitHub deployments for PR previews
+- Create GitHub deployments for PR previews with automatic cleanup
+- Automatically comment on PRs with deployment URLs
 - Works with Wrangler v4
 - Returns the deployment URL
 
@@ -53,6 +54,8 @@ Example:
 
 GitHub token for creating deployment statuses on the PR. This will add visible deployments to pull requests.
 If not provided, the action will not create a GitHub deployment (no error will be thrown).
+When used with `EVENT: "delete"`, this token will also deactivate any GitHub deployments for the PR.
+Additionally, when provided, the action will automatically post comments on the PR with deployment URLs.
 
 ### `ENVIRONMENT_NAME`
 
@@ -110,9 +113,6 @@ jobs:
           HEADERS: '{"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}}'
           GITHUB_TOKEN: ${{ github.token }}
           ENVIRONMENT_NAME: 'preview'
-      
-      - name: Output deployment URL
-        run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
 ### Standard Deployment Without GitHub Deployments
@@ -159,7 +159,7 @@ jobs:
         run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
-### Delete a deployment
+### Delete a deployment and clean up GitHub deployments
 
 ```yaml
 name: Cleanup Cloudflare Pages Project
@@ -171,6 +171,9 @@ on:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+      pull-requests: write
     steps:
       - name: Delete Cloudflare Pages deployment
         uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
@@ -180,6 +183,8 @@ jobs:
           PROJECT_NAME: 'my-project'
           DIST_FOLDER: '.'  # Not used for delete but required
           EVENT: 'delete'
+          GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments and posting comments
+          ENVIRONMENT_NAME: 'preview'
 ```
 
 ## Troubleshooting
@@ -195,6 +200,8 @@ jobs:
 4. **Headers not applied**: Verify that your `HEADERS` JSON is valid and properly formatted.
 
 5. **GitHub deployments not showing**: Ensure your workflow has the `deployments: write` permission.
+
+6. **PR comments not showing**: Ensure your workflow has the `pull-requests: write` permission.
 
 ## License
 
