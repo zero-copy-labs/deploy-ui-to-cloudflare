@@ -7,7 +7,8 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 - Deploy static sites to Cloudflare Pages
 - Delete existing Cloudflare Pages projects
 - Configure custom headers for deployed sites
-- Works with Wrangler v3
+- Create GitHub deployments for PR previews
+- Works with Wrangler v4
 - Returns the deployment URL
 
 ## Inputs
@@ -48,6 +49,16 @@ Example:
 {"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}}
 ```
 
+### `GITHUB_TOKEN`
+
+GitHub token for creating deployment statuses on the PR. This will add visible deployments to pull requests.
+If not provided, the action will not create a GitHub deployment (no error will be thrown).
+
+### `ENVIRONMENT_NAME`
+
+Name of the environment for GitHub deployment. Defaults to "preview".
+The full environment name will be `{ENVIRONMENT_NAME}/pr-{PR_NUMBER}`.
+
 ## Outputs
 
 ### `url`
@@ -56,10 +67,58 @@ The URL of the deployed site (only available when EVENT is "deploy").
 
 ## Example usage
 
-### Deploy to Cloudflare Pages
+### Deploy to Cloudflare Pages with GitHub Deployment
 
 ```yaml
-name: Deploy to Cloudflare Pages
+name: Deploy PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build site
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
+        id: deployment
+        with:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DIST_FOLDER: 'dist'
+          PROJECT_NAME: 'my-project'
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT: 'deploy'
+          HEADERS: '{"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}}'
+          GITHUB_TOKEN: ${{ github.token }}
+          ENVIRONMENT_NAME: 'preview'
+      
+      - name: Output deployment URL
+        run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
+```
+
+### Standard Deployment Without GitHub Deployments
+
+```yaml
+name: Deploy to Production
 
 on:
   push:
@@ -106,7 +165,8 @@ jobs:
 name: Cleanup Cloudflare Pages Project
 
 on:
-  workflow_dispatch:
+  pull_request:
+    types: [closed]
 
 jobs:
   cleanup:
@@ -133,6 +193,8 @@ jobs:
 3. **Deployment failures**: Check if your build output in `DIST_FOLDER` is correct and contains all necessary files for your site.
 
 4. **Headers not applied**: Verify that your `HEADERS` JSON is valid and properly formatted.
+
+5. **GitHub deployments not showing**: Ensure your workflow has the `deployments: write` permission.
 
 ## License
 
