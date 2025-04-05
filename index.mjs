@@ -28,8 +28,8 @@ async function run() {
       throw new Error('Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty');
     }
 
-    if (event !== 'deploy' && event !== 'delete') {
-      throw new Error('EVENT must be either "deploy" or "delete"');
+    if (event !== 'deploy' && event !== 'delete-project' && event !== 'delete-deployment') {
+      throw new Error('EVENT must be either "deploy", "delete-deployment", or "delete-project"');
     }
 
     core.setSecret(cloudflareApiToken);
@@ -64,8 +64,34 @@ async function run() {
       } else {
         core.info('No GitHub token provided, skipping deployment status creation and PR comments');
       }
+    } else if (event === 'delete-deployment') {
+      // Delete specific deployment but keep the project
+      await deleteDeploymentFromCloudflare(projectName, branch);
+      
+      if (githubToken) {
+        // Deactivate GitHub deployments if token is provided
+        await deactivateGitHubDeployments(githubToken, environmentName);
+        
+        // Add cleanup comment on PR if enabled and PR number is available
+        if (commentOnPrCleanup && prNumber) {
+          try {
+            await commentOnPullRequest(
+              githubToken,
+              prNumber,
+              `🧹 PR Preview environment has been cleaned up.`
+            );
+            core.info(`Added cleanup comment to PR #${prNumber}`);
+          } catch (commentError) {
+            // Don't fail the whole action if commenting fails
+            core.warning(`Failed to add cleanup comment to PR #${prNumber}: ${commentError.message}`);
+          }
+        }
+      } else {
+        core.info('No GitHub token provided, skipping deployment deactivation and PR comments');
+      }
     } else {
-      await deleteFromCloudflare(projectName);
+      // Delete entire project (original behavior)
+      await deleteProjectFromCloudflare(projectName);
       
       if (githubToken) {
         // Deactivate GitHub deployments if token is provided
@@ -317,12 +343,92 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
 }
 
 /**
- * Deletes a Cloudflare Pages project
+ * Deletes a specific deployment from a Cloudflare Pages project
+ * @param {string} projectName - Name of the Cloudflare Pages project
+ * @param {string} branch - Branch name of the deployment to delete
+ * @returns {Promise<void>}
+ */
+async function deleteDeploymentFromCloudflare(projectName, branch) {
+  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}" on branch "${branch}"`);
+  
+  let deploymentId = null;
+  let listOutput = '';
+  let errorOutput = '';
+  
+  // First, list deployments to find the specific one to delete
+  const listOptions = {
+    listeners: {
+      stdout: (data) => {
+        listOutput += data.toString();
+      },
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+  
+  try {
+    // Get a list of deployments for this project
+    await exec.exec('npx', ['wrangler@4', 'pages', 'deployment', 'list', projectName], listOptions);
+    
+    // Parse the output to find the deployment ID for the specified branch
+    const deployments = listOutput.split('\n');
+    for (const line of deployments) {
+      if (line.includes(branch)) {
+        // Extract the deployment ID (usually at the beginning of the line)
+        const match = line.match(/([a-zA-Z0-9-]+)\s+/);
+        if (match && match[1]) {
+          deploymentId = match[1];
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
+      core.warning(`Project "${projectName}" does not exist.`);
+      return;
+    } else {
+      core.warning(`Error listing deployments: ${errorOutput || error.message}`);
+      // Continue with the deletion attempt even if we couldn't get the ID
+    }
+  }
+  
+  // If we couldn't find a specific deployment ID, log a warning
+  if (!deploymentId) {
+    core.warning(`Could not find a specific deployment ID for branch "${branch}". Will try to clean up GitHub resources.`);
+    return;
+  }
+  
+  // Now delete the specific deployment
+  errorOutput = '';
+  const deleteOptions = {
+    listeners: {
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+  
+  try {
+    await exec.exec('npx', ['wrangler@4', 'pages', 'deployment', 'delete', projectName, deploymentId, '--yes'], deleteOptions);
+    core.info(`Successfully deleted deployment "${deploymentId}" for project "${projectName}"`);
+  } catch (error) {
+    if (errorOutput.includes('not found') || errorOutput.includes('does not exist')) {
+      core.warning(`Deployment "${deploymentId}" does not exist or is already deleted.`);
+    } else {
+      core.warning(`Failed to delete deployment: ${errorOutput || error.message}`);
+      // Don't throw an error here, just log a warning so the rest of the cleanup can proceed
+    }
+  }
+}
+
+/**
+ * Deletes an entire Cloudflare Pages project
  * @param {string} projectName - Name of the Cloudflare Pages project to delete
  * @returns {Promise<void>}
  */
-async function deleteFromCloudflare(projectName) {
-  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
+async function deleteProjectFromCloudflare(projectName) {
+  core.info(`Deleting Cloudflare Pages project "${projectName}"`);
   
   let errorOutput = '';
   const options = {
