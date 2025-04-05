@@ -5,8 +5,7 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 ## Features
 
 - Deploy static sites to Cloudflare Pages
-- Manage deployments within projects (create, list, delete)
-- Automatically clean up old deployments to prevent hitting deployment limits
+- Delete existing Cloudflare Pages projects
 - Configure custom headers for deployed sites
 - Create GitHub deployments for PR previews with automatic cleanup
 - Works with Wrangler v4
@@ -61,28 +60,6 @@ When used with `EVENT: "delete"`, this token will also deactivate any GitHub dep
 Name of the environment for GitHub deployment. Defaults to "preview".
 The full environment name will be `{ENVIRONMENT_NAME}/pr-{PR_NUMBER}`.
 
-### `CREATE_PROJECT_IF_MISSING`
-
-Automatically create the Cloudflare Pages project if it does not exist. Defaults to "true".
-When set to "true", the action will create the project if it doesn't exist before attempting to deploy.
-Set to "false" if you want the action to fail when the project doesn't exist.
-
-### `CLEANUP_OLD_DEPLOYMENTS`
-
-Clean up old deployments to avoid hitting the deployment limit. Defaults to "false".
-When set to "true", the action will clean up old deployments after creating a new one.
-
-### `DEPLOYMENT_PREFIX`
-
-Prefix to match when cleaning up or deleting deployments. Defaults to empty string.
-When provided with `EVENT: "delete"`, only deployments that match this prefix will be deleted.
-Recommended format: `pr-{PR_NUMBER}` to target deployments for specific PRs.
-
-### `KEEP_DEPLOYMENTS`
-
-Number of deployments to keep when cleaning up. Defaults to "5".
-Only the most recent deployments matching the prefix will be kept, older ones will be deleted.
-
 ## Outputs
 
 ### `url`
@@ -91,7 +68,7 @@ The URL of the deployed site (only available when EVENT is "deploy").
 
 ## Example usage
 
-### Deploy to Cloudflare Pages with GitHub Deployment and Deployment Management
+### Deploy to Cloudflare Pages with GitHub Deployment
 
 ```yaml
 name: Deploy PR Preview
@@ -183,10 +160,10 @@ jobs:
         run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
-### Delete Specific Deployments for a PR
+### Delete a deployment and clean up GitHub deployments
 
 ```yaml
-name: Cleanup PR Preview
+name: Cleanup Cloudflare Pages Project
 
 on:
   pull_request:
@@ -198,13 +175,7 @@ jobs:
     permissions:
       deployments: write
     steps:
-      - name: Extract PR Information
-        id: pr-info
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          echo "DEPLOYMENT_PREFIX=pr-${PR_NUMBER}" >> $GITHUB_ENV
-
-      - name: Delete Deployments and Deactivate GitHub Deployment
+      - name: Delete Cloudflare Pages deployment
         uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
         with:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -214,7 +185,6 @@ jobs:
           EVENT: 'delete'
           GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments
           ENVIRONMENT_NAME: 'preview'
-          DEPLOYMENT_PREFIX: ${{ env.DEPLOYMENT_PREFIX }}
 ```
 
 ## Troubleshooting
