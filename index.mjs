@@ -355,8 +355,15 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
  * @param {string} branch - Branch name of the deployment to delete
  * @returns {Promise<void>}
  */
+/**
+ * Handles branch-specific deployment cleanup for Cloudflare Pages
+ * Uses Cloudflare's REST API to filter and delete all deployments for a specific branch
+ * @param {string} projectName - Name of the Cloudflare Pages project
+ * @param {string} branch - Branch name of the deployments to delete
+ * @returns {Promise<void>}
+ */
 async function deleteDeploymentFromCloudflare(projectName, branch) {
-  core.info(`Deleting Cloudflare Pages deployments for project "${projectName}" on branch "${branch}"`);
+  core.info(`Deleting all Cloudflare Pages deployments for project "${projectName}" on branch "${branch}"`);
   
   const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
   const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -395,11 +402,28 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
       const deployments = data.result;
       core.info(`Found ${deployments.length} total deployments for project "${projectName}"`);
       
-      const matchingDeployments = deployments.filter(deployment => 
+      // Primary matching: by branch metadata (most accurate)
+      let matchingDeployments = deployments.filter(deployment => 
         deployment.deployment_trigger && 
         deployment.deployment_trigger.metadata && 
         deployment.deployment_trigger.metadata.branch === branch
       );
+      
+      // If no direct matches, try fuzzy matching via URL patterns (fallback)
+      if (matchingDeployments.length === 0) {
+        core.info(`No exact branch matches found. Trying URL pattern matching for branch "${branch}"`);
+        
+        // Format branch name for URL matching
+        const branchFormatted = branch.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        
+        matchingDeployments = deployments.filter(deployment => 
+          deployment.url && deployment.url.includes(branchFormatted)
+        );
+        
+        if (matchingDeployments.length > 0) {
+          core.info(`Found ${matchingDeployments.length} deployments matching URL pattern for branch "${branch}"`);
+        }
+      }
       
       if (matchingDeployments.length === 0) {
         core.warning(`No deployments found for branch "${branch}". Will continue with GitHub cleanup.`);
@@ -408,33 +432,59 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
       
       core.info(`Found ${matchingDeployments.length} deployments for branch "${branch}"`);
       
-      // Step 2: Delete each matching deployment
-      for (const deployment of matchingDeployments) {
+      // Log deployment details for debugging
+      matchingDeployments.forEach(deployment => {
+        const id = deployment.id;
+        const url = deployment.url || 'N/A';
+        const createdAt = new Date(deployment.created_on).toISOString();
+        core.info(`  - Deployment ${id}: ${url} (created: ${createdAt})`);
+      });
+      
+      // Step 2: Delete all matching deployments in parallel
+      core.info(`Deleting ${matchingDeployments.length} deployments in parallel...`);
+      
+      // Create an array of deletion promises (but don't wait for them yet)
+      const deletionPromises = matchingDeployments.map(async (deployment) => {
         const deploymentId = deployment.id;
         const deleteDeploymentUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments/${deploymentId}?force=true`;
         
-        core.info(`Deleting deployment ${deploymentId}...`);
-        
-        const deleteResponse = await fetch(deleteDeploymentUrl, { 
-          method: 'DELETE',
-          headers 
-        });
-        
-        if (!deleteResponse.ok) {
-          const errorText = await deleteResponse.text();
-          core.warning(`Failed to delete deployment ${deploymentId}: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
-          continue; // Try the next deployment even if this one failed
+        try {
+          core.info(`Deleting deployment ${deploymentId}...`);
+          
+          const deleteResponse = await fetch(deleteDeploymentUrl, { 
+            method: 'DELETE',
+            headers 
+          });
+          
+          if (!deleteResponse.ok) {
+            const errorText = await deleteResponse.text();
+            core.warning(`Failed to delete deployment ${deploymentId}: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
+            return { id: deploymentId, success: false };
+          }
+          
+          const deleteData = await deleteResponse.json();
+          
+          if (!deleteData.success) {
+            core.warning(`API error during deletion of ${deploymentId}: ${JSON.stringify(deleteData.errors)}`);
+            return { id: deploymentId, success: false };
+          }
+          
+          core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
+          return { id: deploymentId, success: true };
+        } catch (error) {
+          core.warning(`Error during deletion of deployment ${deploymentId}: ${error.message}`);
+          return { id: deploymentId, success: false };
         }
-        
-        const deleteData = await deleteResponse.json();
-        
-        if (!deleteData.success) {
-          core.warning(`API error during deletion of ${deploymentId}: ${JSON.stringify(deleteData.errors)}`);
-          continue;
-        }
-        
-        core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
-      }
+      });
+      
+      // Wait for all deletion operations to complete (in parallel)
+      const results = await Promise.allSettled(deletionPromises);
+      
+      // Summarize results
+      const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+      const failed = matchingDeployments.length - successful;
+      
+      core.info(`Deployment cleanup complete: ${successful} deleted successfully, ${failed} failed`);
       
     } catch (fetchError) {
       if (fetchError.message.includes('not found') || fetchError.message.includes('does not exist')) {
