@@ -40,7 +40,12 @@ Branch to deploy to. Defaults to "main". This affects the URL of your deployment
 
 ### `EVENT`
 
-Action to perform, either "deploy" or "delete". Defaults to "deploy".
+Action to perform, one of:
+- `deploy`: Deploy a new preview (default)
+- `delete-deployment`: Delete a specific deployment but keep the project
+- `delete-project`: Delete the entire Cloudflare Pages project
+
+The `delete-deployment` option is recommended for cleaning up PR previews as it's more targeted and avoids the "too many deployments" error.
 
 ### `HEADERS`
 
@@ -140,10 +145,10 @@ The action will automatically add a comment like this to your PR:
 🚀 PR Preview deployed to: https://branch-name.my-project.pages.dev
 ```
 
-### Delete a deployment with automatic PR cleanup comment
+### Delete a specific deployment (recommended for PR previews)
 
 ```yaml
-name: Cleanup Cloudflare Pages Project
+name: Cleanup PR Preview
 
 on:
   pull_request:
@@ -163,11 +168,36 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PROJECT_NAME: 'my-project'
           DIST_FOLDER: '.'  # Not used for delete but required
-          EVENT: 'delete'
-          GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments and commenting
+          BRANCH: ${{ github.event.pull_request.head.ref }}  # Important: specify the branch name
+          EVENT: 'delete-deployment'  # This deletes only the specific deployment
+          GITHUB_TOKEN: ${{ github.token }}
           ENVIRONMENT_NAME: 'preview'
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMENT_ON_PR_CLEANUP: 'true'  # Will automatically add a cleanup notification comment
+          COMMENT_ON_PR_CLEANUP: 'true'
+```
+
+### Delete an entire project
+
+```yaml
+name: Cleanup Cloudflare Pages Project
+
+on:
+  workflow_dispatch:  # Manual trigger only, use with caution
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+    steps:
+      - name: Delete Cloudflare Pages project
+        uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
+        with:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT_NAME: 'my-project'
+          DIST_FOLDER: '.'  # Not used for delete but required
+          EVENT: 'delete-project'  # This deletes the entire project
 ```
 
 The action will automatically add a comment like this to your PR:

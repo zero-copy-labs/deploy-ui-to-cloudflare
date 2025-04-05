@@ -21,7 +21,7 @@ inputs:
     required: false
     default: 'main'
   EVENT:
-    description: 'Action to perform: deploy or delete'
+    description: 'Action to perform: deploy, delete-deployment, or delete-project'
     required: false
     default: 'deploy'
   HEADERS:
