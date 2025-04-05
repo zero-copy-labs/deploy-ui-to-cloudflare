@@ -42,10 +42,10 @@ Branch to deploy to. Defaults to "main". This affects the URL of your deployment
 
 Action to perform, one of:
 - `deploy`: Deploy a new preview (default)
-- `delete-deployment`: Delete a specific deployment but keep the project
-- `delete-project`: Delete the entire Cloudflare Pages project
+- `delete-deployment`: Delete a specific deployment from Cloudflare and clean up GitHub resources
+- `delete-project`: Delete the entire Cloudflare Pages project (use with caution)
 
-The `delete-deployment` option is recommended for cleaning up PR previews as it's more targeted and avoids the "too many deployments" error.
+The `delete-deployment` option uses the Cloudflare API directly to find and delete a specific deployment by branch name, providing a fully automated cleanup solution.
 
 ### `HEADERS`
 
@@ -145,7 +145,7 @@ The action will automatically add a comment like this to your PR:
 🚀 PR Preview deployed to: https://branch-name.my-project.pages.dev
 ```
 
-### Delete a specific deployment (recommended for PR previews)
+### Delete a specific deployment and clean up GitHub resources
 
 ```yaml
 name: Cleanup PR Preview
@@ -161,20 +161,25 @@ jobs:
       deployments: write
       pull-requests: write
     steps:
-      - name: Delete Cloudflare Pages deployment
+      - name: Delete PR Preview deployment
         uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
         with:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PROJECT_NAME: 'my-project'
           DIST_FOLDER: '.'  # Not used for delete but required
-          BRANCH: ${{ github.event.pull_request.head.ref }}  # Important: specify the branch name
-          EVENT: 'delete-deployment'  # This deletes only the specific deployment
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          EVENT: 'delete-deployment'
           GITHUB_TOKEN: ${{ github.token }}
           ENVIRONMENT_NAME: 'preview'
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMENT_ON_PR_CLEANUP: 'true'
 ```
+
+This approach will:
+1. Use the Cloudflare API to find and delete the specific deployment for the branch
+2. Mark the GitHub deployment as inactive
+3. Add a cleanup comment to the PR
 
 ### Delete an entire project
 
@@ -265,6 +270,10 @@ jobs:
 5. **GitHub deployments not showing**: Ensure your workflow has the `deployments: write` permission.
 
 6. **PR comments not working**: Make sure your workflow has the `pull-requests: write` permission and that you've provided a valid `GITHUB_TOKEN`.
+
+7. **"Too many deployments" error**: If you see this error when trying to delete a project, use the `delete-deployment` event type instead, which will use the Cloudflare API to delete only the specific deployment for that branch.
+
+8. **API permission errors**: Make sure your Cloudflare API token has both read and write permissions for Pages. The token needs to be able to list deployments and delete them.
 
 ## License
 
