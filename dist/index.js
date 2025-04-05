@@ -13064,7 +13064,7 @@ var require_fetch = __commonJS({
         this.emit("terminated", error);
       }
     };
-    function fetch(input, init = {}) {
+    function fetch2(input, init = {}) {
       var _a;
       webidl.argumentLengthCheck(arguments, 1, { header: "globalThis.fetch" });
       const p = createDeferredPromise();
@@ -14001,7 +14001,7 @@ var require_fetch = __commonJS({
       }
     }
     module2.exports = {
-      fetch,
+      fetch: fetch2,
       Fetch,
       fetching,
       finalizeAndReportTiming
@@ -17276,7 +17276,7 @@ var require_undici = __commonJS({
     module2.exports.getGlobalDispatcher = getGlobalDispatcher;
     if (util.nodeMajor > 16 || util.nodeMajor === 16 && util.nodeMinor >= 8) {
       let fetchImpl = null;
-      module2.exports.fetch = async function fetch(resource) {
+      module2.exports.fetch = async function fetch2(resource) {
         if (!fetchImpl) {
           fetchImpl = require_fetch().fetch;
         }
@@ -23267,12 +23267,12 @@ var require_lib3 = __commonJS({
       const dest = new URL$1(destination).protocol;
       return orig === dest;
     };
-    function fetch(url, opts) {
-      if (!fetch.Promise) {
+    function fetch2(url, opts) {
+      if (!fetch2.Promise) {
         throw new Error("native promise missing, set fetch.Promise to your favorite alternative");
       }
-      Body.Promise = fetch.Promise;
-      return new fetch.Promise(function(resolve, reject) {
+      Body.Promise = fetch2.Promise;
+      return new fetch2.Promise(function(resolve, reject) {
         const request = new Request(url, opts);
         const options = getNodeRequestOptions(request);
         const send = (options.protocol === "https:" ? https : http).request;
@@ -23345,7 +23345,7 @@ var require_lib3 = __commonJS({
         req.on("response", function(res) {
           clearTimeout(reqTimeout);
           const headers = createHeadersLenient(res.headers);
-          if (fetch.isRedirect(res.statusCode)) {
+          if (fetch2.isRedirect(res.statusCode)) {
             const location = headers.get("Location");
             let locationURL = null;
             try {
@@ -23407,7 +23407,7 @@ var require_lib3 = __commonJS({
                   requestOpts.body = void 0;
                   requestOpts.headers.delete("content-length");
                 }
-                resolve(fetch(new Request(locationURL, requestOpts)));
+                resolve(fetch2(new Request(locationURL, requestOpts)));
                 finalize();
                 return;
             }
@@ -23500,11 +23500,11 @@ var require_lib3 = __commonJS({
         stream.end();
       }
     }
-    fetch.isRedirect = function(code) {
+    fetch2.isRedirect = function(code) {
       return code === 301 || code === 302 || code === 303 || code === 307 || code === 308;
     };
-    fetch.Promise = global.Promise;
-    module2.exports = exports = fetch;
+    fetch2.Promise = global.Promise;
+    module2.exports = exports = fetch2;
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports;
     exports.Headers = Headers;
@@ -23688,8 +23688,8 @@ var require_dist_node5 = __commonJS({
       let headers = {};
       let status;
       let url;
-      const fetch = requestOptions.request && requestOptions.request.fetch || nodeFetch;
-      return fetch(requestOptions.url, Object.assign(
+      const fetch2 = requestOptions.request && requestOptions.request.fetch || nodeFetch;
+      return fetch2(requestOptions.url, Object.assign(
         {
           method: requestOptions.method,
           body: requestOptions.body,
@@ -25697,60 +25697,79 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
 }
 async function deleteDeploymentFromCloudflare(projectName, branch) {
   core.info(`Deleting Cloudflare Pages deployment for project "${projectName}" on branch "${branch}"`);
-  let deploymentId = null;
-  let listOutput = "";
-  let errorOutput = "";
-  const listOptions = {
-    listeners: {
-      stdout: (data) => {
-        listOutput += data.toString();
-      },
-      stderr: (data) => {
-        errorOutput += data.toString();
-      }
-    }
-  };
+  const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
+  const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!cloudflareApiToken || !cloudflareAccountId) {
+    core.warning("Missing Cloudflare API credentials. Skipping Cloudflare deployment deletion.");
+    return;
+  }
   try {
-    await exec.exec("npx", ["wrangler@4", "pages", "deployment", "list", projectName], listOptions);
-    const deployments = listOutput.split("\n");
-    for (const line of deployments) {
-      if (line.includes(branch)) {
-        const match = line.match(/([a-zA-Z0-9-]+)\s+/);
-        if (match && match[1]) {
-          deploymentId = match[1];
+    let deploymentId = null;
+    const listDeploymentsUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments`;
+    core.info(`Fetching deployments list for project "${projectName}"...`);
+    const headers = {
+      "Authorization": `Bearer ${cloudflareApiToken}`,
+      "Content-Type": "application/json"
+    };
+    try {
+      const response = await fetch(listDeploymentsUrl, { headers });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to list deployments: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(`API error: ${JSON.stringify(data.errors)}`);
+      }
+      const deployments = data.result;
+      core.info(`Found ${deployments.length} deployments for project "${projectName}"`);
+      for (const deployment of deployments) {
+        if (deployment.deployment_trigger && deployment.deployment_trigger.metadata && deployment.deployment_trigger.metadata.branch === branch) {
+          deploymentId = deployment.id;
+          core.info(`Found deployment ID "${deploymentId}" for branch "${branch}"`);
           break;
         }
       }
-    }
-  } catch (error) {
-    if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
-      core.warning(`Project "${projectName}" does not exist.`);
-      return;
-    } else {
-      core.warning(`Error listing deployments: ${errorOutput || error.message}`);
-    }
-  }
-  if (!deploymentId) {
-    core.warning(`Could not find a specific deployment ID for branch "${branch}". Will try to clean up GitHub resources.`);
-    return;
-  }
-  errorOutput = "";
-  const deleteOptions = {
-    listeners: {
-      stderr: (data) => {
-        errorOutput += data.toString();
+      if (!deploymentId) {
+        const branchFormatted = branch.toLowerCase().replace(/[^a-z0-9]/g, "-");
+        for (const deployment of deployments) {
+          if (deployment.url && deployment.url.includes(branchFormatted)) {
+            deploymentId = deployment.id;
+            core.info(`Found deployment ID "${deploymentId}" matching URL pattern for branch "${branch}"`);
+            break;
+          }
+        }
+      }
+      if (!deploymentId) {
+        core.warning(`Could not find a deployment for branch "${branch}". Will continue with GitHub cleanup.`);
+        return;
+      }
+      const deleteDeploymentUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments/${deploymentId}`;
+      core.info(`Deleting deployment ${deploymentId}...`);
+      const deleteResponse = await fetch(deleteDeploymentUrl, {
+        method: "DELETE",
+        headers
+      });
+      if (!deleteResponse.ok) {
+        const errorText = await deleteResponse.text();
+        throw new Error(`Failed to delete deployment: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
+      }
+      const deleteData = await deleteResponse.json();
+      if (!deleteData.success) {
+        throw new Error(`API error during deletion: ${JSON.stringify(deleteData.errors)}`);
+      }
+      core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
+    } catch (fetchError) {
+      if (fetchError.message.includes("not found") || fetchError.message.includes("does not exist")) {
+        core.warning(`Project "${projectName}" or deployment not found. Continuing with GitHub cleanup.`);
+      } else {
+        core.warning(`Error during API request: ${fetchError.message}`);
+        throw fetchError;
       }
     }
-  };
-  try {
-    await exec.exec("npx", ["wrangler@4", "pages", "deployment", "delete", projectName, deploymentId, "--yes"], deleteOptions);
-    core.info(`Successfully deleted deployment "${deploymentId}" for project "${projectName}"`);
   } catch (error) {
-    if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
-      core.warning(`Deployment "${deploymentId}" does not exist or is already deleted.`);
-    } else {
-      core.warning(`Failed to delete deployment: ${errorOutput || error.message}`);
-    }
+    core.warning(`Failed to delete Cloudflare deployment: ${error.message}`);
+    core.info("Will continue with GitHub cleanup despite Cloudflare API errors.");
   }
 }
 async function deleteProjectFromCloudflare(projectName) {
