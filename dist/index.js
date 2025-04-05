@@ -19777,7 +19777,7 @@ var require_core = __commonJS({
       return inputs.map((input) => input.trim());
     }
     exports.getMultilineInput = getMultilineInput;
-    function getBooleanInput2(name, options) {
+    function getBooleanInput(name, options) {
       const trueValue = ["true", "True", "TRUE"];
       const falseValue = ["false", "False", "FALSE"];
       const val = getInput2(name, options);
@@ -19788,7 +19788,7 @@ var require_core = __commonJS({
       throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}
 Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
     }
-    exports.getBooleanInput = getBooleanInput2;
+    exports.getBooleanInput = getBooleanInput;
     function setOutput2(name, value) {
       const filePath = process.env["GITHUB_OUTPUT"] || "";
       if (filePath) {
@@ -25462,10 +25462,6 @@ async function run() {
     const headers = core.getInput("HEADERS") || "{}";
     const githubToken = core.getInput("GITHUB_TOKEN");
     const environmentName = core.getInput("ENVIRONMENT_NAME") || "preview";
-    const createProjectIfMissing = core.getBooleanInput("CREATE_PROJECT_IF_MISSING") || true;
-    const cleanupOldDeployments = core.getBooleanInput("CLEANUP_OLD_DEPLOYMENTS") || false;
-    const deploymentPrefix = core.getInput("DEPLOYMENT_PREFIX") || "";
-    const keepDeployments = parseInt(core.getInput("KEEP_DEPLOYMENTS") || "5", 10);
     if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
       throw new Error("Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty");
     }
@@ -25479,32 +25475,14 @@ async function run() {
     process.env.CLOUDFLARE_API_TOKEN = cloudflareApiToken;
     process.env.CLOUDFLARE_ACCOUNT_ID = cloudflareAccountId;
     if (event === "deploy") {
-      const projectExists = await checkProjectExists(projectName);
-      if (!projectExists) {
-        if (createProjectIfMissing) {
-          core.info(`Project "${projectName}" does not exist. Creating it...`);
-          await createProject(projectName);
-        } else {
-          throw new Error(`Project "${projectName}" does not exist and CREATE_PROJECT_IF_MISSING is set to false`);
-        }
-      }
       const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
       if (githubToken) {
         await createGitHubDeployment(githubToken, deployUrl, environmentName);
       } else {
         core.info("No GitHub token provided, skipping deployment status creation");
       }
-      if (cleanupOldDeployments) {
-        core.info(`Cleaning up old deployments for project "${projectName}"`);
-        await managePrDeployments(projectName, deploymentPrefix, keepDeployments);
-      }
     } else {
-      if (deploymentPrefix) {
-        core.info(`Deleting all deployments with prefix "${deploymentPrefix}" for project "${projectName}"`);
-        await deleteMatchingDeployments(projectName, deploymentPrefix);
-      } else {
-        core.info(`No deployment prefix provided, skipping selective deletion`);
-      }
+      await deleteFromCloudflare(projectName);
       if (githubToken) {
         await deactivateGitHubDeployments(githubToken, environmentName);
       } else {
@@ -25633,22 +25611,17 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   } catch (error) {
     throw new Error(`Wrangler deployment failed: ${errorOutput || error.message}`);
   }
-  const primaryUrlRegex = /Deployment complete! Take a peek over at\s+(\bhttps?:\/\/[^\s]+\b)/i;
-  const primaryMatch = deployOutput.match(primaryUrlRegex);
-  const aliasUrlRegex = /Deployment alias URL:\s+(\bhttps?:\/\/[^\s]+\b)/i;
+  const aliasUrlRegex = /✨\s*Deployment alias URL:\s*(\bhttps?:\/\/[^\s]+\b)/i;
   const aliasMatch = deployOutput.match(aliasUrlRegex);
-  const standardUrlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
+  const standardUrlRegex = /(?:View your deployed site at|Successfully deployed to|Preview URL|✨\s*Deployment complete! Take a peek over at)[:\s]+(\bhttps?:\/\/[^\s]+\b)/i;
   const standardMatch = deployOutput.match(standardUrlRegex);
   let deployUrl;
-  if (primaryMatch && primaryMatch[1]) {
-    deployUrl = primaryMatch[1].trim();
-    core.info(`Using primary deployment URL: ${deployUrl}`);
-  } else if (aliasMatch && aliasMatch[1]) {
+  if (aliasMatch && aliasMatch[1]) {
     deployUrl = aliasMatch[1].trim();
-    core.info(`Using alias deployment URL: ${deployUrl}`);
+    core.info(`Deployment successful (alias URL): ${deployUrl}`);
   } else if (standardMatch && standardMatch[1]) {
     deployUrl = standardMatch[1].trim();
-    core.info(`Using standard deployment URL: ${deployUrl}`);
+    core.info(`Deployment successful: ${deployUrl}`);
   } else {
     core.warning("Could not extract deployment URL from output. Deployment might have succeeded, but no URL was found.");
     deployUrl = `https://${branch === "main" ? "" : branch + "."}${projectName}.pages.dev`;
@@ -25656,6 +25629,27 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   }
   core.setOutput("url", deployUrl);
   return deployUrl;
+}
+async function deleteFromCloudflare(projectName) {
+  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}"`);
+  let errorOutput = "";
+  const options = {
+    listeners: {
+      stderr: (data) => {
+        errorOutput += data.toString();
+      }
+    }
+  };
+  try {
+    await exec.exec("npx", ["wrangler@4", "pages", "project", "delete", projectName, "--yes"], options);
+    core.info(`Successfully deleted project "${projectName}"`);
+  } catch (error) {
+    if (errorOutput.includes("not found") || errorOutput.includes("does not exist")) {
+      core.warning(`Project "${projectName}" does not exist or is already deleted.`);
+    } else {
+      throw new Error(`Failed to delete project: ${errorOutput || error.message}`);
+    }
+  }
 }
 run();
 /*! Bundled license information:
