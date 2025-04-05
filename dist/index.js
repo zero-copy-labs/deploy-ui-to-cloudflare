@@ -25696,7 +25696,7 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
   return deployUrl;
 }
 async function deleteDeploymentFromCloudflare(projectName, branch) {
-  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}" on branch "${branch}"`);
+  core.info(`Deleting Cloudflare Pages deployments for project "${projectName}" on branch "${branch}"`);
   const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
   const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   if (!cloudflareApiToken || !cloudflareAccountId) {
@@ -25704,7 +25704,6 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
     return;
   }
   try {
-    let deploymentId = null;
     const listDeploymentsUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments`;
     core.info(`Fetching deployments list for project "${projectName}"...`);
     const headers = {
@@ -25722,43 +25721,35 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
         throw new Error(`API error: ${JSON.stringify(data.errors)}`);
       }
       const deployments = data.result;
-      core.info(`Found ${deployments.length} deployments for project "${projectName}"`);
-      for (const deployment of deployments) {
-        if (deployment.deployment_trigger && deployment.deployment_trigger.metadata && deployment.deployment_trigger.metadata.branch === branch) {
-          deploymentId = deployment.id;
-          core.info(`Found deployment ID "${deploymentId}" for branch "${branch}"`);
-          break;
-        }
-      }
-      if (!deploymentId) {
-        const branchFormatted = branch.toLowerCase().replace(/[^a-z0-9]/g, "-");
-        for (const deployment of deployments) {
-          if (deployment.url && deployment.url.includes(branchFormatted)) {
-            deploymentId = deployment.id;
-            core.info(`Found deployment ID "${deploymentId}" matching URL pattern for branch "${branch}"`);
-            break;
-          }
-        }
-      }
-      if (!deploymentId) {
-        core.warning(`Could not find a deployment for branch "${branch}". Will continue with GitHub cleanup.`);
+      core.info(`Found ${deployments.length} total deployments for project "${projectName}"`);
+      const matchingDeployments = deployments.filter(
+        (deployment) => deployment.deployment_trigger && deployment.deployment_trigger.metadata && deployment.deployment_trigger.metadata.branch === branch
+      );
+      if (matchingDeployments.length === 0) {
+        core.warning(`No deployments found for branch "${branch}". Will continue with GitHub cleanup.`);
         return;
       }
-      const deleteDeploymentUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments/${deploymentId}`;
-      core.info(`Deleting deployment ${deploymentId}...`);
-      const deleteResponse = await fetch(deleteDeploymentUrl, {
-        method: "DELETE",
-        headers
-      });
-      if (!deleteResponse.ok) {
-        const errorText = await deleteResponse.text();
-        throw new Error(`Failed to delete deployment: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
+      core.info(`Found ${matchingDeployments.length} deployments for branch "${branch}"`);
+      for (const deployment of matchingDeployments) {
+        const deploymentId = deployment.id;
+        const deleteDeploymentUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments/${deploymentId}?force=true`;
+        core.info(`Deleting deployment ${deploymentId}...`);
+        const deleteResponse = await fetch(deleteDeploymentUrl, {
+          method: "DELETE",
+          headers
+        });
+        if (!deleteResponse.ok) {
+          const errorText = await deleteResponse.text();
+          core.warning(`Failed to delete deployment ${deploymentId}: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
+          continue;
+        }
+        const deleteData = await deleteResponse.json();
+        if (!deleteData.success) {
+          core.warning(`API error during deletion of ${deploymentId}: ${JSON.stringify(deleteData.errors)}`);
+          continue;
+        }
+        core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
       }
-      const deleteData = await deleteResponse.json();
-      if (!deleteData.success) {
-        throw new Error(`API error during deletion: ${JSON.stringify(deleteData.errors)}`);
-      }
-      core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
     } catch (fetchError) {
       if (fetchError.message.includes("not found") || fetchError.message.includes("does not exist")) {
         core.warning(`Project "${projectName}" or deployment not found. Continuing with GitHub cleanup.`);
@@ -25768,7 +25759,7 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
       }
     }
   } catch (error) {
-    core.warning(`Failed to delete Cloudflare deployment: ${error.message}`);
+    core.warning(`Failed to delete Cloudflare deployments: ${error.message}`);
     core.info("Will continue with GitHub cleanup despite Cloudflare API errors.");
   }
 }
