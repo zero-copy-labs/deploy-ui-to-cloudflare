@@ -349,13 +349,14 @@ async function deployToCloudflare(distFolder, projectName, branch, headersJson) 
  * @returns {Promise<void>}
  */
 /**
- * Deletes a specific deployment from a Cloudflare Pages project using Cloudflare API
+ * Deletes all deployments for a specific branch from a Cloudflare Pages project using the Cloudflare API
+ * Implementation based on the proven curl approach
  * @param {string} projectName - Name of the Cloudflare Pages project
  * @param {string} branch - Branch name of the deployment to delete
  * @returns {Promise<void>}
  */
 async function deleteDeploymentFromCloudflare(projectName, branch) {
-  core.info(`Deleting Cloudflare Pages deployment for project "${projectName}" on branch "${branch}"`);
+  core.info(`Deleting Cloudflare Pages deployments for project "${projectName}" on branch "${branch}"`);
   
   const cloudflareApiToken = process.env.CLOUDFLARE_API_TOKEN;
   const cloudflareAccountId = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -366,10 +367,7 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
   }
   
   try {
-    // Step 1: List deployments to find the one for our branch
-    let deploymentId = null;
-    
-    // Fetch the list of deployments for this project
+    // Step 1: List deployments to find the ones for our branch
     const listDeploymentsUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments`;
     
     core.info(`Fetching deployments list for project "${projectName}"...`);
@@ -379,9 +377,7 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
       'Content-Type': 'application/json'
     };
     
-    // Use node-fetch or another HTTP client to fetch deployments
     try {
-      // We're using the native fetch API if available (Node.js 18+)
       const response = await fetch(listDeploymentsUrl, { headers });
       
       if (!response.ok) {
@@ -395,61 +391,50 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
         throw new Error(`API error: ${JSON.stringify(data.errors)}`);
       }
       
-      // Find the deployment for our branch
+      // Find all deployments for our branch
       const deployments = data.result;
-      core.info(`Found ${deployments.length} deployments for project "${projectName}"`);
+      core.info(`Found ${deployments.length} total deployments for project "${projectName}"`);
       
-      for (const deployment of deployments) {
-        if (deployment.deployment_trigger && 
-            deployment.deployment_trigger.metadata && 
-            deployment.deployment_trigger.metadata.branch === branch) {
-          deploymentId = deployment.id;
-          core.info(`Found deployment ID "${deploymentId}" for branch "${branch}"`);
-          break;
-        }
-      }
+      const matchingDeployments = deployments.filter(deployment => 
+        deployment.deployment_trigger && 
+        deployment.deployment_trigger.metadata && 
+        deployment.deployment_trigger.metadata.branch === branch
+      );
       
-      // If we couldn't find by branch name directly, try matching the URL pattern
-      if (!deploymentId) {
-        // Look for branch name in URLs (e.g., https://branch-name.project.pages.dev)
-        const branchFormatted = branch.toLowerCase().replace(/[^a-z0-9]/g, '-');
-        
-        for (const deployment of deployments) {
-          if (deployment.url && deployment.url.includes(branchFormatted)) {
-            deploymentId = deployment.id;
-            core.info(`Found deployment ID "${deploymentId}" matching URL pattern for branch "${branch}"`);
-            break;
-          }
-        }
-      }
-      
-      if (!deploymentId) {
-        core.warning(`Could not find a deployment for branch "${branch}". Will continue with GitHub cleanup.`);
+      if (matchingDeployments.length === 0) {
+        core.warning(`No deployments found for branch "${branch}". Will continue with GitHub cleanup.`);
         return;
       }
       
-      // Step 2: Delete the specific deployment
-      const deleteDeploymentUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments/${deploymentId}`;
+      core.info(`Found ${matchingDeployments.length} deployments for branch "${branch}"`);
       
-      core.info(`Deleting deployment ${deploymentId}...`);
-      
-      const deleteResponse = await fetch(deleteDeploymentUrl, { 
-        method: 'DELETE',
-        headers 
-      });
-      
-      if (!deleteResponse.ok) {
-        const errorText = await deleteResponse.text();
-        throw new Error(`Failed to delete deployment: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
+      // Step 2: Delete each matching deployment
+      for (const deployment of matchingDeployments) {
+        const deploymentId = deployment.id;
+        const deleteDeploymentUrl = `https://api.cloudflare.com/client/v4/accounts/${cloudflareAccountId}/pages/projects/${projectName}/deployments/${deploymentId}?force=true`;
+        
+        core.info(`Deleting deployment ${deploymentId}...`);
+        
+        const deleteResponse = await fetch(deleteDeploymentUrl, { 
+          method: 'DELETE',
+          headers 
+        });
+        
+        if (!deleteResponse.ok) {
+          const errorText = await deleteResponse.text();
+          core.warning(`Failed to delete deployment ${deploymentId}: ${deleteResponse.status} ${deleteResponse.statusText} - ${errorText}`);
+          continue; // Try the next deployment even if this one failed
+        }
+        
+        const deleteData = await deleteResponse.json();
+        
+        if (!deleteData.success) {
+          core.warning(`API error during deletion of ${deploymentId}: ${JSON.stringify(deleteData.errors)}`);
+          continue;
+        }
+        
+        core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
       }
-      
-      const deleteData = await deleteResponse.json();
-      
-      if (!deleteData.success) {
-        throw new Error(`API error during deletion: ${JSON.stringify(deleteData.errors)}`);
-      }
-      
-      core.info(`Successfully deleted deployment "${deploymentId}" for branch "${branch}"`);
       
     } catch (fetchError) {
       if (fetchError.message.includes('not found') || fetchError.message.includes('does not exist')) {
@@ -461,7 +446,7 @@ async function deleteDeploymentFromCloudflare(projectName, branch) {
     }
     
   } catch (error) {
-    core.warning(`Failed to delete Cloudflare deployment: ${error.message}`);
+    core.warning(`Failed to delete Cloudflare deployments: ${error.message}`);
     core.info('Will continue with GitHub cleanup despite Cloudflare API errors.');
     // Continue with the GitHub cleanup regardless
   }
