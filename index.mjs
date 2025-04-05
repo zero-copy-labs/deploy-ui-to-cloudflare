@@ -20,6 +20,9 @@ async function run() {
     const headers = core.getInput('HEADERS') || '{}';
     const githubToken = core.getInput('GITHUB_TOKEN');
     const environmentName = core.getInput('ENVIRONMENT_NAME') || 'preview';
+    const commentOnPr = core.getInput('COMMENT_ON_PR') === 'true';
+    const commentOnPrCleanup = core.getInput('COMMENT_ON_PR_CLEANUP') === 'true';
+    const prNumber = core.getInput('PR_NUMBER') || (github.context.payload.pull_request?.number?.toString() || '');
 
     if (!cloudflareApiToken || !cloudflareAccountId || !projectName) {
       throw new Error('Required inputs CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and PROJECT_NAME must be non-empty');
@@ -40,25 +43,84 @@ async function run() {
     if (event === 'deploy') {
       const deployUrl = await deployToCloudflare(distFolder, projectName, branch, headers);
       
-      // Create GitHub deployment if token is provided
       if (githubToken) {
+        // Create GitHub deployment if token is provided
         await createGitHubDeployment(githubToken, deployUrl, environmentName);
+        
+        // Comment on PR with deployment URL if enabled and PR number is available
+        if (commentOnPr && prNumber) {
+          try {
+            await commentOnPullRequest(
+              githubToken,
+              prNumber,
+              `🚀 PR Preview deployed to: ${deployUrl}`
+            );
+            core.info(`Added deployment comment to PR #${prNumber}`);
+          } catch (commentError) {
+            // Don't fail the whole action if commenting fails
+            core.warning(`Failed to add deployment comment to PR #${prNumber}: ${commentError.message}`);
+          }
+        }
       } else {
-        core.info('No GitHub token provided, skipping deployment status creation');
+        core.info('No GitHub token provided, skipping deployment status creation and PR comments');
       }
     } else {
       await deleteFromCloudflare(projectName);
       
-      // Deactivate GitHub deployments if token is provided
       if (githubToken) {
+        // Deactivate GitHub deployments if token is provided
         await deactivateGitHubDeployments(githubToken, environmentName);
+        
+        // Add cleanup comment on PR if enabled and PR number is available
+        if (commentOnPrCleanup && prNumber) {
+          try {
+            await commentOnPullRequest(
+              githubToken,
+              prNumber,
+              `🧹 PR Preview environment has been cleaned up.`
+            );
+            core.info(`Added cleanup comment to PR #${prNumber}`);
+          } catch (commentError) {
+            // Don't fail the whole action if commenting fails
+            core.warning(`Failed to add cleanup comment to PR #${prNumber}: ${commentError.message}`);
+          }
+        }
       } else {
-        core.info('No GitHub token provided, skipping deployment deactivation');
+        core.info('No GitHub token provided, skipping deployment deactivation and PR comments');
       }
     }
 
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
+  }
+}
+
+/**
+ * Comments on a pull request
+ * @param {string} token - GitHub token
+ * @param {string} prNumber - Pull request number
+ * @param {string} comment - Comment body
+ * @returns {Promise<void>}
+ */
+async function commentOnPullRequest(token, prNumber, comment) {
+  if (!token || !prNumber) {
+    throw new Error('GitHub token and PR number are required to comment on a PR');
+  }
+  
+  const octokit = github.getOctokit(token);
+  const context = github.context;
+  
+  core.info(`Adding comment to PR #${prNumber}`);
+  
+  try {
+    await octokit.rest.issues.createComment({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      issue_number: parseInt(prNumber),
+      body: comment
+    });
+  } catch (error) {
+    throw new Error(`Failed to comment on PR #${prNumber}: ${error.message}`);
   }
 }
 

@@ -8,6 +8,8 @@ This action deploys your static site to Cloudflare Pages or deletes an existing 
 - Delete existing Cloudflare Pages projects
 - Configure custom headers for deployed sites
 - Create GitHub deployments for PR previews with automatic cleanup
+- **Automatically comment on PRs with deployment URLs**
+- **Add cleanup notifications to PRs when deployments are removed**
 - Works with Wrangler v4
 - Returns the deployment URL
 
@@ -51,14 +53,28 @@ Example:
 
 ### `GITHUB_TOKEN`
 
-GitHub token for creating deployment statuses on the PR. This will add visible deployments to pull requests.
-If not provided, the action will not create a GitHub deployment (no error will be thrown).
+GitHub token for creating deployment statuses on the PR and adding comments. This will add visible deployments to pull requests.
+If not provided, the action will not create a GitHub deployment or comments (no error will be thrown).
 When used with `EVENT: "delete"`, this token will also deactivate any GitHub deployments for the PR.
 
 ### `ENVIRONMENT_NAME`
 
 Name of the environment for GitHub deployment. Defaults to "preview".
 The full environment name will be `{ENVIRONMENT_NAME}/pr-{PR_NUMBER}`.
+
+### `COMMENT_ON_PR`
+
+Whether to automatically comment on the PR with the deployment URL. Defaults to "false".
+When set to "true" and `GITHUB_TOKEN` is provided, a comment with the deployment URL will be added to the PR.
+
+### `COMMENT_ON_PR_CLEANUP`
+
+Whether to automatically comment on the PR when the deployment is cleaned up. Defaults to "false".
+When set to "true" and `GITHUB_TOKEN` is provided, a cleanup notification comment will be added to the PR.
+
+### `PR_NUMBER`
+
+Pull request number for PR-specific deployments and comments. If not provided, the action will try to get it from the GitHub context.
 
 ## Outputs
 
@@ -68,7 +84,7 @@ The URL of the deployed site (only available when EVENT is "deploy").
 
 ## Example usage
 
-### Deploy to Cloudflare Pages with GitHub Deployment
+### Deploy to Cloudflare Pages with Automatic PR Comments
 
 ```yaml
 name: Deploy PR Preview
@@ -111,9 +127,53 @@ jobs:
           HEADERS: '{"version.json":{"cacheControl":"max-age=0,no-cache,no-store,must-revalidate"}}'
           GITHUB_TOKEN: ${{ github.token }}
           ENVIRONMENT_NAME: 'preview'
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_ON_PR: 'true'  # Will automatically add a comment with the deployment URL
       
       - name: Output deployment URL
         run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
+```
+
+The action will automatically add a comment like this to your PR:
+
+```
+🚀 PR Preview deployed to: https://branch-name.my-project.pages.dev
+```
+
+### Delete a deployment with automatic PR cleanup comment
+
+```yaml
+name: Cleanup Cloudflare Pages Project
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+      pull-requests: write
+    steps:
+      - name: Delete Cloudflare Pages deployment
+        uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
+        with:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT_NAME: 'my-project'
+          DIST_FOLDER: '.'  # Not used for delete but required
+          EVENT: 'delete'
+          GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments and commenting
+          ENVIRONMENT_NAME: 'preview'
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT_ON_PR_CLEANUP: 'true'  # Will automatically add a cleanup notification comment
+```
+
+The action will automatically add a comment like this to your PR:
+
+```
+🧹 PR Preview environment has been cleaned up.
 ```
 
 ### Standard Deployment Without GitHub Deployments
@@ -160,33 +220,6 @@ jobs:
         run: echo "Deployed to ${{ steps.deployment.outputs.url }}"
 ```
 
-### Delete a deployment and clean up GitHub deployments
-
-```yaml
-name: Cleanup Cloudflare Pages Project
-
-on:
-  pull_request:
-    types: [closed]
-
-jobs:
-  cleanup:
-    runs-on: ubuntu-latest
-    permissions:
-      deployments: write
-    steps:
-      - name: Delete Cloudflare Pages deployment
-        uses: zero-copy-labs/deploy-ui-to-cloudflare@v1
-        with:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PROJECT_NAME: 'my-project'
-          DIST_FOLDER: '.'  # Not used for delete but required
-          EVENT: 'delete'
-          GITHUB_TOKEN: ${{ github.token }}  # For deactivating GitHub deployments
-          ENVIRONMENT_NAME: 'preview'
-```
-
 ## Troubleshooting
 
 ### Common issues:
@@ -200,6 +233,8 @@ jobs:
 4. **Headers not applied**: Verify that your `HEADERS` JSON is valid and properly formatted.
 
 5. **GitHub deployments not showing**: Ensure your workflow has the `deployments: write` permission.
+
+6. **PR comments not working**: Make sure your workflow has the `pull-requests: write` permission and that you've provided a valid `GITHUB_TOKEN`.
 
 ## License
 

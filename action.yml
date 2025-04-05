@@ -29,12 +29,23 @@ inputs:
     required: false
     default: '{}'
   GITHUB_TOKEN:
-    description: 'GitHub token for creating deployment statuses on PR'
+    description: 'GitHub token for creating deployment statuses and PR comments'
     required: false
   ENVIRONMENT_NAME:
     description: 'Name of the environment for GitHub deployment (e.g. "preview" or "production")'
     required: false
     default: 'preview'
+  COMMENT_ON_PR:
+    description: 'Whether to automatically comment on the PR with the deployment URL (true/false)'
+    required: false
+    default: 'false'
+  COMMENT_ON_PR_CLEANUP:
+    description: 'Whether to automatically comment on the PR when the deployment is cleaned up (true/false)'
+    required: false
+    default: 'false'
+  PR_NUMBER:
+    description: 'Pull request number for PR-specific deployments and comments'
+    required: false
 outputs:
   url:
     description: 'URL of the deployed site (only available when EVENT is "deploy")'
